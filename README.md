@@ -239,6 +239,11 @@ Same requirements as for building.
 make test
 ```
 
+## Screenshots
+
+![Salmon Watch OK](https://dmitryfrank.com/_media/projects/salmon/salmon_screenshot_ok.png)
+![Salmon Watch Warn1](https://dmitryfrank.com/_media/projects/salmon/salmon_screenshot_warn1.png)
+
 ## Documentation
 
 - [Configuring Salmon](./docs/salmon_config.md)
