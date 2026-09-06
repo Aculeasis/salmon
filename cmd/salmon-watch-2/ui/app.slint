@@ -204,6 +204,7 @@ component TableHeaderText inherits Rectangle {
         text: root.text;
         color: root.text-color;
         font-weight: 700;
+        wrap: word-wrap;
     }
     Text {
         x: 1px;
@@ -211,6 +212,7 @@ component TableHeaderText inherits Rectangle {
         text: root.text;
         color: root.text-color;
         font-weight: 700;
+        wrap: word-wrap;
     }
 }
 
@@ -319,12 +321,14 @@ export component MainWindow inherits Window {
     property <brush> warning-color: dark-theme ? #f1c453 : #b8860b;
     property <brush> stale-color: dark-theme ? #999999 : #666666;
     property <brush> surface-color: dark-theme ? #2a2a2a : #e5e5e5;
+    property <length> server-id-column-width: min(160px, max(60px, (self.width - 68px) * 0.4));
+    property <length> server-connection-column-width: min(120px, max(64px, (self.width - 68px) * 0.3));
 
     ScrollView {
-        // Preserve the compact desktop layout when the native window becomes
-        // narrower, and let ScrollView expose the overflow horizontally.
-        viewport-width: max(self.visible-width, 600px);
-        VerticalBox {
+        // Layouts and text shrink/wrap first. Once the content reaches its
+        // intrinsic minimum width, any remaining overflow becomes scrollable.
+        viewport-width: max(self.visible-width, content.min-width);
+        content := VerticalBox {
             padding: 22px;
             spacing: 0px;
             // Keep every section at its preferred height. Any viewport space
@@ -335,6 +339,7 @@ export component MainWindow inherits Window {
             HorizontalBox {
                 Rectangle {
                     horizontal-stretch: 1;
+                    min-width: title-text.preferred-width + 1px;
                     min-height: title-text.preferred-height;
                     title-text := Text {
                         width: parent.width - 1px;
@@ -384,15 +389,15 @@ export component MainWindow inherits Window {
                 spacing: 5px;
                 HorizontalLayout {
                     spacing: 12px;
-                    TableHeaderText { text: "server"; text-color: root.foreground-color; width: 160px; }
-                    TableHeaderText { text: "connection"; text-color: root.foreground-color; width: 120px; }
+                    TableHeaderText { text: "server"; text-color: root.foreground-color; width: root.server-id-column-width; }
+                    TableHeaderText { text: "connection"; text-color: root.foreground-color; width: root.server-connection-column-width; }
                     TableHeaderText { text: "last heartbeat"; text-color: root.foreground-color; horizontal-stretch: 1; }
                 }
                 for server in root.servers: HorizontalLayout {
                     spacing: 12px;
-                    Text { text: server.id; color: root.foreground-color; width: 160px; }
-                    Text { text: server.connection; color: server.connected ? root.connected-color : root.disconnected-color; width: 120px; }
-                    Text { text: server.last-heartbeat; color: server.connected ? root.foreground-color : root.disconnected-color; horizontal-stretch: 1; }
+                    Text { text: server.id; color: root.foreground-color; width: root.server-id-column-width; wrap: char-wrap; }
+                    Text { text: server.connection; color: server.connected ? root.connected-color : root.disconnected-color; width: root.server-connection-column-width; wrap: word-wrap; }
+                    Text { text: server.last-heartbeat; color: server.connected ? root.foreground-color : root.disconnected-color; horizontal-stretch: 1; wrap: word-wrap; }
                 }
                 Rectangle { height: 1px; background: root.border-color-value; }
             }
