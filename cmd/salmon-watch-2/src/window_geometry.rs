@@ -1,24 +1,23 @@
 use std::cell::Cell;
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use anyhow::{Context, Result};
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit::event::WindowEvent};
 
-use crate::state::{self, WindowGeometry};
+use crate::persistence::{Store, WindowGeometry};
 
 #[derive(Clone)]
 pub struct WindowGeometryManager {
-    state_path: PathBuf,
+    store: Store,
     last_normal: Rc<Cell<Option<WindowGeometry>>>,
     last_persisted: Rc<Cell<Option<WindowGeometry>>>,
     pending_show: Rc<Cell<Option<WindowGeometry>>>,
 }
 
 impl WindowGeometryManager {
-    pub fn new(state_path: PathBuf, saved: Option<WindowGeometry>) -> Self {
+    pub fn new(store: Store, saved: Option<WindowGeometry>) -> Self {
         Self {
-            state_path,
+            store,
             last_normal: Rc::new(Cell::new(saved.map(WindowGeometry::as_normal))),
             last_persisted: Rc::new(Cell::new(saved)),
             pending_show: Rc::new(Cell::new(saved)),
@@ -71,9 +70,10 @@ impl WindowGeometryManager {
             return Ok(());
         }
 
-        let mut state = state::load(&self.state_path)?;
-        state.preferences.window_geometry = Some(placement);
-        state::save(&self.state_path, &state)?;
+        self.store.update(|state| {
+            state.preferences.window_geometry = Some(placement);
+            Ok(())
+        })?;
         self.last_persisted.set(Some(placement));
         Ok(())
     }
@@ -157,6 +157,7 @@ fn is_normal_window_state(maximized: bool, fullscreen: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn maximized_and_fullscreen_bounds_are_not_normal_geometry() {
@@ -175,7 +176,8 @@ mod tests {
             height: 600,
             maximized: true,
         };
-        let manager = WindowGeometryManager::new(PathBuf::from("unused"), Some(placement));
+        let manager =
+            WindowGeometryManager::new(Store::new(PathBuf::from("unused")), Some(placement));
 
         assert_eq!(manager.last_normal.get(), Some(placement.as_normal()));
         assert_eq!(manager.pending_show.get(), Some(placement));

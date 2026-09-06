@@ -1,5 +1,22 @@
 # salmon-watch-2
 
+Salmon Watch 2 reads the existing Salmon Watch configuration from
+`$XDG_CONFIG_HOME/salmon-watch/salmon-watch.yml` (normally
+`~/.config/salmon-watch/salmon-watch.yml`). A custom file can be selected with
+`--config`.
+
+The current implementation supports direct, unencrypted WebSocket connections:
+
+```yaml
+wsClient:
+  servers:
+    - id: local
+      addr: localhost:41990
+```
+
+TLS, bearer authentication, and tunnels are rejected until their implementations
+are added; they are never silently ignored.
+
 ## Testing
 
 Run the regular test suite with:

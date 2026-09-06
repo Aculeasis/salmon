@@ -2,12 +2,46 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const STATE_FILENAME: &str = ".salmon-watch-2-state.json";
+
+#[derive(Clone)]
+pub struct Store {
+    path: Arc<PathBuf>,
+    lock: Arc<Mutex<()>>,
+}
+
+impl Store {
+    pub fn new(path: PathBuf) -> Self {
+        Self {
+            path: Arc::new(path),
+            lock: Arc::new(Mutex::new(())),
+        }
+    }
+
+    pub fn load(&self) -> Result<StateFile> {
+        let _guard = self
+            .lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        load(&self.path)
+    }
+
+    pub fn update(&self, change: impl FnOnce(&mut StateFile) -> Result<()>) -> Result<()> {
+        let _guard = self
+            .lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = load(&self.path)?;
+        change(&mut state)?;
+        save(&self.path, &state)
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StateFile {
@@ -29,6 +63,45 @@ impl Default for StateFile {
             preferences: Preferences::default(),
             extra: BTreeMap::new(),
         }
+    }
+}
+
+impl StateFile {
+    pub fn decoded_snoozes(&self) -> Result<BTreeMap<String, i64>> {
+        self.snoozed
+            .iter()
+            .map(|(key, entry)| {
+                let until = time::OffsetDateTime::parse(
+                    &entry.snoozed_until,
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .with_context(|| format!("invalid snooze deadline for {key:?}"))?;
+                Ok((key.clone(), until.unix_timestamp()))
+            })
+            .collect()
+    }
+
+    pub fn replace_snoozes(&mut self, snoozes: &BTreeMap<String, i64>) -> Result<()> {
+        self.snoozed.retain(|key, _| snoozes.contains_key(key));
+        for (key, until) in snoozes {
+            let formatted = time::OffsetDateTime::from_unix_timestamp(*until)
+                .with_context(|| format!("invalid snooze deadline for {key:?}"))?
+                .format(&time::format_description::well_known::Rfc3339)
+                .context("failed to format snooze deadline")?;
+            match self.snoozed.get_mut(key) {
+                Some(entry) => entry.snoozed_until = formatted,
+                None => {
+                    self.snoozed.insert(
+                        key.clone(),
+                        SnoozeEntry {
+                            snoozed_until: formatted,
+                            extra: BTreeMap::new(),
+                        },
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 }
 

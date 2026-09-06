@@ -275,6 +275,18 @@ mod tests {
     }
 
     #[test]
+    fn generated_icons_have_a_valid_slint_rgba_buffer() {
+        let icons = TrayIcons::load().unwrap();
+        let image = icons.icon(mock_state()).unwrap();
+        let rgba = image
+            .to_rgba8()
+            .expect("tray image must expose RGBA pixels");
+
+        assert_eq!((rgba.width(), rgba.height()), (40, 40));
+        assert_eq!(rgba.as_bytes().len(), 40 * 40 * 4);
+    }
+
+    #[test]
     fn initialization_icon_uses_known_fraction() {
         let icons = TrayIcons::load().unwrap();
         let base_state = TrayState {
