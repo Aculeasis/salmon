@@ -17,3 +17,13 @@ tempfile = "3"
 
 [build-dependencies]
 slint-build = "=1.17.1"
+
+[profile.release]
+# Optimize distributed binaries for size. Release builds do not need Rust's
+# symbol table, and one codegen unit gives LLVM the best opportunity to remove
+# duplicate and unreachable code across dependencies.
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
