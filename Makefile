@@ -16,12 +16,13 @@ LDFLAGS := -s -w \
 	-X 'github.com/dimonomid/salmon/version.builtBy=make'
 
 .PHONY: all
-all: clean salmon salmon-watch
+all: clean salmon salmon-watch salmon-watch-2
 
 .PHONY: test
 test:
 	go test --count 1 --race ./...
 	node --test cmd/salmon-watch/jstest/*.js
+	cargo test --manifest-path cmd/salmon-watch-2/Cargo.toml
 
 .PHONY: generate
 generate:
@@ -44,6 +45,13 @@ salmon-watch: generate
 		-o bin/salmon-watch$(GOEXE) \
 		-ldflags "$(LDFLAGS)" \
 		./cmd/salmon-watch
+
+.PHONY: salmon-watch-2
+salmon-watch-2:
+	@echo Building bin/salmon-watch-2$(GOEXE)
+	@cargo build --release --manifest-path cmd/salmon-watch-2/Cargo.toml
+	@mkdir -p bin
+	@cp cmd/salmon-watch-2/target/release/salmon-watch-2$(GOEXE) bin/salmon-watch-2$(GOEXE)
 
 .PHONY: clean
 clean:

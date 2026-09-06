@@ -37,6 +37,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install salmon-watch build dependencies
         run: |
           sudo apt-get update
@@ -51,7 +54,7 @@ jobs:
 
       - name: Build binaries
         shell: bash
-        run: make salmon salmon-watch
+        run: make salmon salmon-watch salmon-watch-2
 
       - name: Package binaries
         run: |
@@ -110,6 +113,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install make
         if: matrix.os == 'windows'
         shell: pwsh
@@ -124,7 +130,7 @@ jobs:
 
       - name: Build salmon-watch
         shell: bash
-        run: make salmon-watch
+        run: make salmon-watch salmon-watch-2
 
       - name: Package macOS binary
         if: matrix.os == 'macos'

@@ -25,6 +25,9 @@ jobs:
         with:
           node-version: lts/*
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
