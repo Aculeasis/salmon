@@ -33,10 +33,20 @@ impl WindowGeometryManager {
     }
 
     pub fn show(&self, window: &slint::Window) -> Result<()> {
+        let placement = self.pending_show.get();
+        if let Some(placement) = placement {
+            // Prepare the final placement while the window is still hidden. On
+            // first show Winit puts this directly into the native window's
+            // creation attributes; on later shows hide() has already restored
+            // the normal rectangle while the window was unmapped.
+            self.last_normal.set(Some(placement.as_normal()));
+            window.set_maximized(false);
+            apply_window_geometry(window, placement);
+        }
         window.show().context("failed to show native window")?;
         if self.pending_show.get().is_some() {
-            // Slint synchronizes its Window properties while mapping the native
-            // window. Apply the placement once that synchronization is done.
+            // Keep pending_show set until the first redraw so move/resize events
+            // produced by restoration cannot replace the saved normal bounds.
             window.request_redraw();
         }
         Ok(())
@@ -95,7 +105,10 @@ impl WindowGeometryManager {
             && window.is_visible()
             && let Some(placement) = self.pending_show.take()
         {
-            self.last_normal.set(Some(placement.as_normal()));
+            // On first creation the monitor scale is not known before show(),
+            // so a saved physical size may only have been approximated. Apply
+            // it once more with the real scale, and restore maximization here
+            // because X11 may overwrite an earlier maximized request.
             window.set_maximized(false);
             apply_window_geometry(window, placement);
             window.set_maximized(placement.maximized);

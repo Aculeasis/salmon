@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use chrono::{Datelike, Local, NaiveDateTime, TimeZone, Timelike, Utc};
-use slint::{ModelRc, VecModel};
+use slint::{Model, ModelRc, VecModel};
 
 use super::{IncidentView, MainWindow, SalmonTray, ServerView};
 use crate::domain::{Incident, IncidentState, OverallState as DomainOverallState, UiSnapshot};
@@ -40,19 +40,28 @@ pub fn apply_snapshot(
             connected: server.connected,
         })
         .collect();
-    window.set_servers(ModelRc::from(Rc::new(VecModel::from(servers))));
+    let current_servers = window.get_servers();
+    if !update_rows_in_place(&current_servers, &servers, |old, new| old.id == new.id) {
+        window.set_servers(ModelRc::from(Rc::new(VecModel::from(servers))));
+    }
     let active: Vec<_> = snapshot
         .active
         .iter()
         .map(|incident| incident_view(incident, None, now_millis))
         .collect();
-    window.set_active_incidents(ModelRc::from(Rc::new(VecModel::from(active))));
+    let current_active = window.get_active_incidents();
+    if !update_rows_in_place(&current_active, &active, |old, new| old.key == new.key) {
+        window.set_active_incidents(ModelRc::from(Rc::new(VecModel::from(active))));
+    }
     let snoozed: Vec<_> = snapshot
         .snoozed
         .iter()
         .map(|item| incident_view(&item.incident, Some(item.until), now_millis))
         .collect();
-    window.set_snoozed_incidents(ModelRc::from(Rc::new(VecModel::from(snoozed))));
+    let current_snoozed = window.get_snoozed_incidents();
+    if !update_rows_in_place(&current_snoozed, &snoozed, |old, new| old.key == new.key) {
+        window.set_snoozed_incidents(ModelRc::from(Rc::new(VecModel::from(snoozed))));
+    }
 
     let tray_state = TrayState {
         alerting: overall(snapshot.alerting_state),
@@ -68,6 +77,36 @@ pub fn apply_snapshot(
     }
     tray.set_status_title(tray_state.status_title().into());
     window.set_tray_flashing(tray_state.is_flashing());
+}
+
+fn update_rows_in_place<T>(
+    model: &ModelRc<T>,
+    rows: &[T],
+    same_identity: impl Fn(&T, &T) -> bool,
+) -> bool
+where
+    T: Clone + PartialEq + 'static,
+{
+    if model.row_count() != rows.len() {
+        return false;
+    }
+    let Some(current): Option<Vec<_>> = (0..rows.len()).map(|row| model.row_data(row)).collect()
+    else {
+        return false;
+    };
+    if current
+        .iter()
+        .zip(rows)
+        .any(|(old, new)| !same_identity(old, new))
+    {
+        return false;
+    }
+    for (row, (old, new)) in current.into_iter().zip(rows).enumerate() {
+        if old != *new {
+            model.set_row_data(row, new.clone());
+        }
+    }
+    true
 }
 
 fn incident_view(incident: &Incident, snoozed_until: Option<i64>, now_millis: i64) -> IncidentView {
@@ -92,10 +131,14 @@ fn incident_view(incident: &Incident, snoozed_until: Option<i64>, now_millis: i6
             .map(|until| format_unix_timestamp(Some(until), now_millis))
             .unwrap_or_default()
             .into(),
-        severity: match incident.state {
-            IncidentState::Ok => 1,
-            IncidentState::Warning => 2,
-            IncidentState::Error => 3,
+        severity: if incident.state != IncidentState::Ok && incident.key.starts_with("internal.") {
+            4
+        } else {
+            match incident.state {
+                IncidentState::Ok => 1,
+                IncidentState::Warning => 2,
+                IncidentState::Error => 3,
+            }
         },
         stale: incident.stale,
         snoozed: snoozed_until.is_some(),
@@ -223,6 +266,8 @@ fn overall(state: DomainOverallState) -> OverallState {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::{Cell, RefCell};
+
     use chrono::NaiveDate;
 
     use super::*;
@@ -278,5 +323,102 @@ mod tests {
         assert_eq!(format_unix_timestamp(None, 1_000_000), "never");
         assert_eq!(display_wire_time("", 1_000_000), "never");
         assert_eq!(display_wire_time("not-a-time", 1_000_000), "not-a-time");
+    }
+
+    #[test]
+    fn stable_models_skip_unchanged_rows_and_update_changed_rows_in_place() {
+        let backing = Rc::new(CountingModel::new(vec![("disk", "15s"), ("cpu", "30s")]));
+        let model = ModelRc::from(backing.clone());
+
+        assert!(update_rows_in_place(
+            &model,
+            &[("disk", "15s"), ("cpu", "30s")],
+            |old, new| old.0 == new.0
+        ));
+        assert_eq!(backing.writes.get(), 0);
+
+        assert!(update_rows_in_place(
+            &model,
+            &[("disk", "30s"), ("cpu", "30s")],
+            |old, new| old.0 == new.0
+        ));
+        assert_eq!(backing.writes.get(), 1);
+        assert_eq!(model.row_data(0), Some(("disk", "30s")));
+
+        assert!(!update_rows_in_place(
+            &model,
+            &[("cpu", "30s"), ("disk", "30s")],
+            |old, new| old.0 == new.0
+        ));
+        assert!(!update_rows_in_place(
+            &model,
+            &[("disk", "30s")],
+            |old, new| { old.0 == new.0 }
+        ));
+        assert_eq!(backing.writes.get(), 1);
+    }
+
+    #[test]
+    fn internal_errors_project_to_the_distinct_magenta_severity() {
+        let view = incident_view(
+            &Incident {
+                key: "internal.connection.local".into(),
+                state: IncidentState::Error,
+                details: "connection refused".into(),
+                incident_started_at: "0".into(),
+                stale: false,
+            },
+            None,
+            1_000_000,
+        );
+        assert_eq!(view.severity, 4);
+
+        let ordinary = incident_view(
+            &Incident {
+                key: "disk".into(),
+                state: IncidentState::Error,
+                details: "full".into(),
+                incident_started_at: "0".into(),
+                stale: false,
+            },
+            None,
+            1_000_000,
+        );
+        assert_eq!(ordinary.severity, 3);
+    }
+
+    struct CountingModel<T> {
+        rows: RefCell<Vec<T>>,
+        writes: Cell<usize>,
+    }
+
+    impl<T> CountingModel<T> {
+        fn new(rows: Vec<T>) -> Self {
+            Self {
+                rows: RefCell::new(rows),
+                writes: Cell::new(0),
+            }
+        }
+    }
+
+    impl<T: Clone + 'static> Model for CountingModel<T> {
+        type Data = T;
+
+        fn row_count(&self) -> usize {
+            self.rows.borrow().len()
+        }
+
+        fn row_data(&self, row: usize) -> Option<Self::Data> {
+            self.rows.borrow().get(row).cloned()
+        }
+
+        fn set_row_data(&self, row: usize, data: Self::Data) {
+            self.rows.borrow_mut()[row] = data;
+            self.writes.set(self.writes.get() + 1);
+        }
+
+        fn model_tracker(&self) -> &dyn slint::ModelTracker {
+            &()
+        }
     }
 }

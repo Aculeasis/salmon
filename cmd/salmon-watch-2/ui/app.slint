@@ -231,9 +231,13 @@ component IncidentCard inherits VerticalLayout {
         spacing: 8px;
         alignment: start;
         Image {
-            source: root.incident.severity == 3
-                ? @image-url("../../salmon-watch/assets/salmon_red.png")
-                : @image-url("../../salmon-watch/assets/salmon_yellow.png");
+            source: root.incident.severity == 4
+                ? @image-url("../../salmon-watch/assets/salmon_magenta.png")
+                : root.incident.severity == 3
+                    ? @image-url("../../salmon-watch/assets/salmon_red.png")
+                    : root.incident.severity == 1
+                        ? @image-url("../../salmon-watch/assets/salmon_green.png")
+                        : @image-url("../../salmon-watch/assets/salmon_yellow.png");
             width: 20px;
             height: 20px;
             image-fit: contain;
@@ -429,23 +433,23 @@ export component MainWindow inherits Window {
                     root.preferences-changed();
                 }
             }
-            if root.snoozed-incidents-expanded: Rectangle {
-                min-height: snoozed-list.preferred-height + 8px;
-                preferred-height: snoozed-list.preferred-height + 8px;
-                max-height: snoozed-list.preferred-height + 8px;
-                background: root.surface-color;
+            if root.snoozed-incidents-expanded: VerticalLayout {
+                spacing: 10px;
+                if root.snoozed-incidents.length == 0: Text {
+                    text: "No snoozed incidents.";
+                    color: root.foreground-color;
+                }
+                for incident in root.snoozed-incidents: Rectangle {
+                    min-height: card.preferred-height + 8px;
+                    preferred-height: card.preferred-height + 8px;
+                    max-height: card.preferred-height + 8px;
+                    background: root.surface-color;
 
-                snoozed-list := VerticalLayout {
-                    x: 4px;
-                    y: 4px;
-                    width: parent.width - 8px;
-                    height: parent.height - 8px;
-                    spacing: 10px;
-                    if root.snoozed-incidents.length == 0: Text {
-                        text: "No snoozed incidents.";
-                        color: root.foreground-color;
-                    }
-                    for incident in root.snoozed-incidents: IncidentCard {
+                    card := IncidentCard {
+                        x: 4px;
+                        y: 4px;
+                        width: parent.width - 8px;
+                        height: parent.height - 8px;
                         incident: incident;
                         foreground-color: root.foreground-color;
                         border-color-value: root.border-color-value;
