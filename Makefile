@@ -53,6 +53,13 @@ salmon-watch-2:
 	@mkdir -p bin
 	@cp cmd/salmon-watch-2/target/release/salmon-watch-2$(GOEXE) bin/salmon-watch-2$(GOEXE)
 
+.PHONY: salmon-watch-2-debug
+salmon-watch-2-debug:
+	@echo Building bin/salmon-watch-2-debug$(GOEXE)
+	@cargo build --manifest-path cmd/salmon-watch-2/Cargo.toml
+	@mkdir -p bin
+	@cp cmd/salmon-watch-2/target/debug/salmon-watch-2$(GOEXE) bin/salmon-watch-2-debug$(GOEXE)
+
 .PHONY: clean
 clean:
 	rm -rf bin
