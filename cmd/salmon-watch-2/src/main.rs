@@ -8,6 +8,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use slint::winit_030::WinitWindowAccessor;
 use slint::{CloseRequestResponse, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use notification::{DesktopNotificationSink, NotificationSink};
@@ -222,11 +223,14 @@ fn install_tray_callbacks(
     let window_weak = window.as_weak();
     let geometry_for_open = geometry.clone();
     tray.on_open_window(move || {
-        if let Some(window) = window_weak.upgrade()
-            && let Err(error) = geometry_for_open.show(window.window())
-        {
+        let Some(window) = window_weak.upgrade() else {
+            return;
+        };
+        if let Err(error) = geometry_for_open.show(window.window()) {
             eprintln!("salmon-watch-2: failed to show window: {error:#}");
+            return;
         }
+        activate_window(window.window());
     });
 
     tray.on_example_notification(move || {
@@ -247,6 +251,13 @@ fn install_tray_callbacks(
             eprintln!("salmon-watch-2: failed to save window geometry: {error:#}");
         }
         let _ = slint::quit_event_loop();
+    });
+}
+
+fn activate_window(window: &slint::Window) {
+    window.with_winit_window(|window| {
+        window.set_minimized(false);
+        window.focus_window();
     });
 }
 
