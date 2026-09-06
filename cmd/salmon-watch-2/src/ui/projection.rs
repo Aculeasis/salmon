@@ -22,6 +22,7 @@ pub fn apply_snapshot(
     window.set_server_summary(
         format!("{online}/{} servers are online", snapshot.servers.len()).into(),
     );
+    window.set_online_server_count(online as i32);
     let servers: Vec<_> = snapshot
         .servers
         .iter()

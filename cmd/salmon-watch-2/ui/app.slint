@@ -293,6 +293,7 @@ export component MainWindow inherits Window {
     in-out property <bool> snoozed-incidents-expanded: false;
     in property <[ServerView]> servers;
     in property <string> server-summary;
+    in property <int> online-server-count;
     in property <image> current-tray-icon;
     in property <bool> tray-flashing;
     in property <[IncidentView]> active-incidents;
@@ -365,7 +366,11 @@ export component MainWindow inherits Window {
             SectionHeading {
                 label: root.server-summary;
                 expanded: root.servers-expanded;
-                label-color: root.warning-color;
+                label-color: root.online-server-count == root.servers.length
+                    ? root.connected-color
+                    : root.online-server-count == 0
+                        ? root.disconnected-color
+                        : root.warning-color;
                 toggled => {
                     root.servers-expanded = !root.servers-expanded;
                     root.preferences-changed();
