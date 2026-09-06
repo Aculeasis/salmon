@@ -17,7 +17,20 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 pub async fn run_client(
     server: ServerConfig,
     events: mpsc::Sender<Event>,
+    shutdown: watch::Receiver<bool>,
+) {
+    if server.tunnel.is_some() {
+        super::tunnel::run(server, events, shutdown).await;
+    } else {
+        run_connection_loop(server, events, shutdown, false).await;
+    }
+}
+
+pub(super) async fn run_connection_loop(
+    server: ServerConfig,
+    events: mpsc::Sender<Event>,
     mut shutdown: watch::Receiver<bool>,
+    tunneled: bool,
 ) {
     let mut reconnect_seconds = 0u64;
     loop {
@@ -42,6 +55,9 @@ pub async fn run_client(
         let mut socket = match connected {
             Ok((socket, _)) => socket,
             Err(error) => {
+                if tunneled && tunnel_stopped(&mut shutdown).await {
+                    return;
+                }
                 eprintln!(
                     "salmon-watch-2: server {} connection failed: {error}",
                     server.id
@@ -146,6 +162,9 @@ pub async fn run_client(
             "salmon-watch-2: server {} connection lost: {disconnect_error}",
             server.id
         );
+        if tunneled && tunnel_stopped(&mut shutdown).await {
+            return;
+        }
         let _ = events
             .send(Event::Disconnected {
                 server_id: server.id.clone(),
@@ -154,6 +173,13 @@ pub async fn run_client(
             })
             .await;
         reconnect_seconds = (reconnect_seconds + 1).min(10);
+    }
+}
+
+async fn tunnel_stopped(shutdown: &mut watch::Receiver<bool>) -> bool {
+    tokio::select! {
+        _ = sleep(Duration::from_millis(50)) => *shutdown.borrow(),
+        _ = shutdown.changed() => true,
     }
 }
 

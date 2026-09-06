@@ -11,6 +11,15 @@ pub enum Event {
         at: i64,
         error: String,
     },
+    TunnelReady {
+        server_id: String,
+        at: i64,
+    },
+    TunnelFailed {
+        server_id: String,
+        at: i64,
+        error: String,
+    },
     Heartbeat {
         server_id: String,
         at: i64,

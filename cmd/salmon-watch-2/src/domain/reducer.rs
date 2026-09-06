@@ -21,6 +21,12 @@ impl Reducer {
                 at,
                 error,
             } => self.disconnected(&server_id, at, error),
+            Event::TunnelReady { server_id, at } => self.tunnel_ready(&server_id, at),
+            Event::TunnelFailed {
+                server_id,
+                at,
+                error,
+            } => self.tunnel_failed(&server_id, at, error),
             Event::Heartbeat { server_id, at } => self.heartbeat(&server_id, at),
             Event::Notification {
                 server_id,
@@ -188,6 +194,84 @@ impl Reducer {
         };
         Transition {
             changed: status_changed || stale_changed || internal_changed,
+            effects,
+        }
+    }
+
+    fn tunnel_ready(&mut self, id: &str, _at: i64) -> Transition {
+        if !self.state.servers.contains_key(id) {
+            return Transition::default();
+        }
+        let key = format!("internal.tunnel.{id}");
+        let removed = self.state.internal_incidents.remove(&key).is_some();
+        Transition {
+            changed: removed,
+            effects: removed
+                .then(|| Effect::Notify {
+                    title: format!("OK: {key}"),
+                    body: String::new(),
+                })
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn tunnel_failed(&mut self, id: &str, at: i64, error: String) -> Transition {
+        let Some(server) = self.state.servers.get_mut(id) else {
+            return Transition::default();
+        };
+        let status_changed = !server.initialized || server.connected;
+        server.initialized = true;
+        server.connected = false;
+        server.connection_changed_at = status_changed
+            .then_some(at)
+            .or(server.connection_changed_at);
+
+        let mut stale_changed = false;
+        if let Some(incidents) = self.state.incidents.get_mut(id) {
+            for incident in incidents {
+                if !incident.stale {
+                    incident.stale = true;
+                    stale_changed = true;
+                }
+            }
+        }
+
+        // A tunnel failure is the root cause. Do not leave a redundant socket
+        // failure beside it if both sides notice the same break concurrently.
+        let connection_removed = self
+            .state
+            .internal_incidents
+            .remove(&format!("internal.connection.{id}"))
+            .is_some();
+        let key = format!("internal.tunnel.{id}");
+        let mut effects = Vec::new();
+        let internal_changed = match self.state.internal_incidents.get_mut(&key) {
+            Some(incident) if incident.details == error => false,
+            Some(incident) => {
+                incident.details = error;
+                true
+            }
+            None => {
+                effects.push(Effect::Notify {
+                    title: format!("error: {key}"),
+                    body: error.clone(),
+                });
+                self.state.internal_incidents.insert(
+                    key.clone(),
+                    Incident {
+                        key,
+                        state: IncidentState::Error,
+                        details: error,
+                        incident_started_at: at.to_string(),
+                        stale: false,
+                    },
+                );
+                true
+            }
+        };
+        Transition {
+            changed: status_changed || stale_changed || connection_removed || internal_changed,
             effects,
         }
     }

@@ -26,6 +26,7 @@ async fn plain_client_reports_connection_snapshot_and_heartbeat() {
         ServerConfig {
             id: "local".into(),
             addr: address.to_string(),
+            tunnel: None,
         },
         events_tx,
         shutdown_rx,
@@ -68,6 +69,7 @@ async fn malformed_snapshot_reports_the_full_decode_error_chain() {
         ServerConfig {
             id: "local".into(),
             addr: address.to_string(),
+            tunnel: None,
         },
         events_tx,
         shutdown_rx,

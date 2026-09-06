@@ -311,6 +311,86 @@ fn reconnect_notifies_once_that_connection_incident_resolved() {
 }
 
 #[test]
+fn tunnel_failure_is_distinct_and_marks_server_data_stale() {
+    let mut r = reducer(&["remote"]);
+    r.reduce(Event::Connected {
+        server_id: "remote".into(),
+        at: 1,
+    });
+    notify(
+        &mut r,
+        "remote",
+        notification(vec![incident("disk", IncidentState::Error)]),
+        1,
+    );
+    r.reduce(Event::Disconnected {
+        server_id: "remote".into(),
+        at: 2,
+        error: "socket closed".into(),
+    });
+
+    let transition = r.reduce(Event::TunnelFailed {
+        server_id: "remote".into(),
+        at: 2,
+        error: "ssh exited".into(),
+    });
+    let snapshot = r.state().snapshot(2);
+    assert!(!snapshot.servers[0].connected);
+    assert!(
+        snapshot
+            .active
+            .iter()
+            .any(|item| { item.key == "internal.tunnel.remote" && item.details == "ssh exited" })
+    );
+    assert!(
+        !snapshot
+            .active
+            .iter()
+            .any(|item| item.key == "internal.connection.remote")
+    );
+    assert!(
+        snapshot
+            .active
+            .iter()
+            .find(|item| item.key == "remote.disk")
+            .unwrap()
+            .stale
+    );
+    assert!(matches!(
+        &transition.effects[..],
+        [Effect::Notify { title, body }]
+            if title == "error: internal.tunnel.remote" && body == "ssh exited"
+    ));
+}
+
+#[test]
+fn tunnel_readiness_resolves_only_the_tunnel_incident() {
+    let mut r = reducer(&["remote"]);
+    r.reduce(Event::TunnelFailed {
+        server_id: "remote".into(),
+        at: 1,
+        error: "ssh exited".into(),
+    });
+    let transition = r.reduce(Event::TunnelReady {
+        server_id: "remote".into(),
+        at: 2,
+    });
+    assert!(r.state().snapshot(2).active.is_empty());
+    assert!(matches!(
+        &transition.effects[..],
+        [Effect::Notify { title, body }]
+            if title == "OK: internal.tunnel.remote" && body.is_empty()
+    ));
+    assert!(
+        !r.reduce(Event::TunnelReady {
+            server_id: "remote".into(),
+            at: 3,
+        })
+        .changed
+    );
+}
+
+#[test]
 fn fresh_snapshot_replaces_stale_data() {
     let mut r = reducer(&["local"]);
     notify(
@@ -502,6 +582,21 @@ fn unknown_events_for_unconfigured_servers_do_not_mutate_state() {
             server_id: "other".into(),
             at: 3,
             error: "x".into()
+        })
+        .changed
+    );
+    assert!(
+        !r.reduce(Event::TunnelReady {
+            server_id: "other".into(),
+            at: 4,
+        })
+        .changed
+    );
+    assert!(
+        !r.reduce(Event::TunnelFailed {
+            server_id: "other".into(),
+            at: 5,
+            error: "x".into(),
         })
         .changed
     );
