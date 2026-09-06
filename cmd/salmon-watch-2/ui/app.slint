@@ -31,7 +31,7 @@ component SectionHeading inherits HorizontalLayout {
         width: heading.preferred-width + 8px;
         heading := Text {
             x: 4px;
-            text: root.label + (root.expanded ? " ▼" : " ▲");
+            text: "▪ " + root.label + (root.expanded ? " ▼" : " ▲");
             color: root.label-color;
             vertical-alignment: center;
         }
@@ -318,7 +318,7 @@ export component MainWindow inherits Window {
         viewport-width: max(self.visible-width, 600px);
         VerticalBox {
             padding: 22px;
-            spacing: 12px;
+            spacing: 0px;
             // Keep every section at its preferred height. Any viewport space
             // left over belongs below the content instead of being distributed
             // among the rows by the layout's default stretch alignment.
@@ -357,6 +357,8 @@ export component MainWindow inherits Window {
                 }
             }
 
+            Rectangle { height: 12px; }
+
             SectionHeading {
                 label: "2/3 servers are online";
                 expanded: root.servers-expanded;
@@ -380,9 +382,8 @@ export component MainWindow inherits Window {
                     Text { text: server.connection; color: server.connected ? root.connected-color : root.disconnected-color; width: 120px; }
                     Text { text: server.last-heartbeat; color: server.connected ? root.foreground-color : root.disconnected-color; horizontal-stretch: 1; }
                 }
+                Rectangle { height: 1px; background: root.border-color-value; }
             }
-
-            Rectangle { height: 1px; background: root.border-color-value; }
 
             SectionHeading {
                 label: root.active-incidents.length == 1 ? "1 incident" : root.active-incidents.length + " incidents";
@@ -410,8 +411,6 @@ export component MainWindow inherits Window {
                     action(action, argument) => { root.mock-action(incident.key, action, argument); }
                 }
             }
-
-            Rectangle { height: 1px; background: root.border-color-value; }
 
             SectionHeading {
                 label: root.snoozed-incidents.length == 1 ? "1 snoozed incident" : root.snoozed-incidents.length + " snoozed incidents";
