@@ -1,6 +1,7 @@
 mod notification;
 mod state;
 mod tray;
+mod window_geometry;
 
 use std::ffi::OsString;
 use std::rc::Rc;
@@ -12,6 +13,7 @@ use slint::{CloseRequestResponse, ModelRc, SharedString, Timer, TimerMode, VecMo
 use notification::{DesktopNotificationSink, NotificationSink};
 use state::{StateFile, Theme};
 use tray::{OverallState, TrayIcons, TrayState};
+use window_geometry::WindowGeometryManager;
 
 slint::include_modules!();
 
@@ -84,10 +86,12 @@ fn run(start_hidden: bool) -> Result<()> {
     let persisted = state::load(&state_path)?;
     let window = MainWindow::new().context("failed to create native window")?;
     let tray = SalmonTray::new().context("failed to create system tray icon")?;
+    let geometry =
+        WindowGeometryManager::new(state_path.clone(), persisted.preferences.window_geometry);
 
     apply_preferences(&window, &persisted);
     install_mock_data(&window);
-    install_window_callbacks(&window, &state_path);
+    install_window_callbacks(&window, &state_path, geometry.clone());
     window.on_mock_action(|key, action, argument| {
         if argument.is_empty() {
             eprintln!("salmon-watch-2: mocked {action} action for {key}");
@@ -95,7 +99,13 @@ fn run(start_hidden: bool) -> Result<()> {
             eprintln!("salmon-watch-2: mocked {action} action for {key} with {argument}");
         }
     });
-    install_tray_callbacks(&window, &tray, Rc::new(DesktopNotificationSink));
+    install_tray_callbacks(
+        &window,
+        &tray,
+        Rc::new(DesktopNotificationSink),
+        geometry.clone(),
+    );
+    install_ctrl_c_handler(&tray)?;
 
     let tray_state = mocked_tray_state();
     let icons = TrayIcons::load()?;
@@ -121,12 +131,15 @@ fn run(start_hidden: bool) -> Result<()> {
     }
 
     if !start_hidden {
-        window.show().context("failed to show native window")?;
+        geometry.show(window.window())?;
     }
 
     // The tray keeps the event loop alive when --start-hidden is used or after
     // the status window is closed.
     slint::run_event_loop().context("native event loop failed")?;
+    if window.window().is_visible() {
+        geometry.save(window.window())?;
+    }
     drop(flash_timer);
     Ok(())
 }
@@ -138,10 +151,22 @@ fn apply_preferences(window: &MainWindow, state: &StateFile) {
     window.set_snoozed_incidents_expanded(state.preferences.sections.snoozed_incidents_expanded);
 }
 
-fn install_window_callbacks(window: &MainWindow, state_path: &std::path::Path) {
-    window
-        .window()
-        .on_close_requested(|| CloseRequestResponse::HideWindow);
+fn install_window_callbacks(
+    window: &MainWindow,
+    state_path: &std::path::Path,
+    geometry: WindowGeometryManager,
+) {
+    geometry.install_event_handler(window.window());
+
+    let window_weak = window.as_weak();
+    window.window().on_close_requested(move || {
+        if let Some(window) = window_weak.upgrade()
+            && let Err(error) = geometry.hide(window.window())
+        {
+            eprintln!("salmon-watch-2: failed to hide window: {error:#}");
+        }
+        CloseRequestResponse::KeepWindowShown
+    });
 
     let window_weak = window.as_weak();
     let state_path = state_path.to_owned();
@@ -176,22 +201,31 @@ fn install_tray_callbacks(
     window: &MainWindow,
     tray: &SalmonTray,
     notifications: Rc<dyn NotificationSink>,
+    geometry: WindowGeometryManager,
 ) {
     let window_weak = window.as_weak();
+    let geometry_for_toggle = geometry.clone();
     tray.on_toggle_window(move || {
         if let Some(window) = window_weak.upgrade() {
             if window.window().is_visible() {
-                let _ = window.hide();
+                if let Err(error) = geometry_for_toggle.hide(window.window()) {
+                    eprintln!("salmon-watch-2: failed to hide window: {error:#}");
+                }
             } else {
-                let _ = window.show();
+                if let Err(error) = geometry_for_toggle.show(window.window()) {
+                    eprintln!("salmon-watch-2: failed to show window: {error:#}");
+                }
             }
         }
     });
 
     let window_weak = window.as_weak();
+    let geometry_for_open = geometry.clone();
     tray.on_open_window(move || {
-        if let Some(window) = window_weak.upgrade() {
-            let _ = window.show();
+        if let Some(window) = window_weak.upgrade()
+            && let Err(error) = geometry_for_open.show(window.window())
+        {
+            eprintln!("salmon-watch-2: failed to show window: {error:#}");
         }
     });
 
@@ -204,9 +238,27 @@ fn install_tray_callbacks(
         }
     });
 
-    tray.on_exit(|| {
+    let window_weak = window.as_weak();
+    tray.on_exit(move || {
+        if let Some(window) = window_weak.upgrade()
+            && window.window().is_visible()
+            && let Err(error) = geometry.save(window.window())
+        {
+            eprintln!("salmon-watch-2: failed to save window geometry: {error:#}");
+        }
         let _ = slint::quit_event_loop();
     });
+}
+
+fn install_ctrl_c_handler(tray: &SalmonTray) -> Result<()> {
+    let tray_weak = tray.as_weak();
+    ctrlc::set_handler(move || {
+        let tray_weak = tray_weak.clone();
+        if let Err(error) = tray_weak.upgrade_in_event_loop(|tray| tray.invoke_exit()) {
+            eprintln!("salmon-watch-2: failed to request shutdown after Ctrl+C: {error}");
+        }
+    })
+    .context("failed to install Ctrl+C handler")
 }
 
 fn install_mock_data(window: &MainWindow) {
@@ -293,11 +345,145 @@ fn mocked_tray_state() -> TrayState {
 #[cfg(test)]
 mod tests {
     use super::{CliOptions, parse_cli_options};
+    use crate::state::WindowGeometry;
+    use crate::window_geometry::WindowGeometryManager;
+    use slint::ComponentHandle;
     use std::ffi::OsString;
 
     #[test]
     fn window_is_visible_by_default() {
         assert_eq!(parse_cli_options([]).unwrap(), CliOptions::default());
+    }
+
+    #[test]
+    #[ignore = "requires a real desktop window manager"]
+    fn native_startup_restores_geometry_and_maximized_state() {
+        let geometry = WindowGeometry {
+            x: 120,
+            y: 80,
+            width: 700,
+            height: 500,
+            maximized: true,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let manager =
+            WindowGeometryManager::new(directory.path().join("state.json"), Some(geometry));
+        let window = super::MainWindow::new().unwrap();
+        manager.install_event_handler(window.window());
+        manager.show(window.window()).unwrap();
+
+        let maximized = std::rc::Rc::new(std::cell::Cell::new(false));
+        let maximized_result = maximized.clone();
+        let window_weak = window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(500), move || {
+            if let Some(window) = window_weak.upgrade() {
+                maximized_result.set(window.window().is_maximized());
+                window.window().set_maximized(false);
+            }
+        });
+
+        let normal_geometry = std::rc::Rc::new(std::cell::Cell::new(None));
+        let geometry_result = normal_geometry.clone();
+        let window_weak = window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(900), move || {
+            if let Some(window) = window_weak.upgrade() {
+                let position = window.window().position();
+                let size = window.window().size();
+                geometry_result.set(Some(WindowGeometry {
+                    x: position.x,
+                    y: position.y,
+                    width: size.width,
+                    height: size.height,
+                    maximized: false,
+                }));
+            }
+            slint::quit_event_loop().unwrap();
+        });
+        slint::run_event_loop().unwrap();
+
+        assert!(maximized.get());
+        let restored = normal_geometry.get().unwrap();
+        assert_eq!((restored.width, restored.height), (700, 500));
+        assert!((restored.x - 120).abs() <= 2, "restored x = {}", restored.x);
+        assert!((restored.y - 80).abs() <= 2, "restored y = {}", restored.y);
+    }
+
+    #[test]
+    #[ignore = "requires a real desktop window manager"]
+    fn native_hide_show_preserves_normal_geometry_while_maximized() {
+        let geometry = WindowGeometry {
+            x: 160,
+            y: 110,
+            width: 680,
+            height: 480,
+            maximized: false,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let manager =
+            WindowGeometryManager::new(directory.path().join("state.json"), Some(geometry));
+        let window = super::MainWindow::new().unwrap();
+        manager.install_event_handler(window.window());
+        manager.show(window.window()).unwrap();
+
+        let window_weak = window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(300), move || {
+            if let Some(window) = window_weak.upgrade() {
+                window.window().set_maximized(true);
+            }
+        });
+
+        let manager_for_hide = manager.clone();
+        let window_weak = window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(550), move || {
+            if let Some(window) = window_weak.upgrade() {
+                manager_for_hide.hide(window.window()).unwrap();
+            }
+        });
+
+        let manager_for_show = manager.clone();
+        let window_weak = window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(700), move || {
+            if let Some(window) = window_weak.upgrade() {
+                manager_for_show.show(window.window()).unwrap();
+            }
+        });
+
+        let was_maximized = std::rc::Rc::new(std::cell::Cell::new(false));
+        let maximized_result = was_maximized.clone();
+        let window_weak = window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(950), move || {
+            if let Some(window) = window_weak.upgrade() {
+                maximized_result.set(window.window().is_maximized());
+                window.window().set_maximized(false);
+            }
+        });
+
+        let normal_geometry = std::rc::Rc::new(std::cell::Cell::new(None));
+        let geometry_result = normal_geometry.clone();
+        let window_weak = window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(1250), move || {
+            if let Some(window) = window_weak.upgrade() {
+                let position = window.window().position();
+                let size = window.window().size();
+                geometry_result.set(Some(WindowGeometry {
+                    x: position.x,
+                    y: position.y,
+                    width: size.width,
+                    height: size.height,
+                    maximized: false,
+                }));
+            }
+            slint::quit_event_loop().unwrap();
+        });
+        // The application tray keeps its event loop alive while hidden. This
+        // standalone test needs the explicit until-quit variant instead.
+        slint::run_event_loop_until_quit().unwrap();
+
+        assert!(was_maximized.get());
+        let restored = normal_geometry.get().unwrap();
+        assert_eq!((restored.width, restored.height), (680, 480));
+        assert!((restored.x - 160).abs() <= 2, "restored x = {}", restored.x);
+        assert!((restored.y - 110).abs() <= 2, "restored y = {}", restored.y);
     }
 
     #[test]

@@ -45,6 +45,8 @@ pub struct Preferences {
     pub theme: Theme,
     #[serde(default)]
     pub sections: SectionPreferences,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_geometry: Option<WindowGeometry>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -54,8 +56,26 @@ impl Default for Preferences {
         Self {
             theme: Theme::Dark,
             sections: SectionPreferences::default(),
+            window_geometry: None,
             extra: BTreeMap::new(),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct WindowGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+impl WindowGeometry {
+    pub(crate) fn as_normal(mut self) -> Self {
+        self.maximized = false;
+        self
     }
 }
 
@@ -172,6 +192,7 @@ mod tests {
         assert!(state.preferences.sections.servers_expanded);
         assert!(state.preferences.sections.active_incidents_expanded);
         assert!(!state.preferences.sections.snoozed_incidents_expanded);
+        assert_eq!(state.preferences.window_geometry, None);
     }
 
     #[test]
@@ -184,6 +205,35 @@ mod tests {
         assert_eq!(state.schema_version, 1);
         assert_eq!(state.snoozed.len(), 1);
         assert_eq!(state.preferences.theme, Theme::Dark);
+        assert_eq!(state.preferences.window_geometry, None);
+    }
+
+    #[test]
+    fn window_geometry_round_trips() {
+        let geometry = WindowGeometry {
+            x: -120,
+            y: 48,
+            width: 940,
+            height: 720,
+            maximized: true,
+        };
+        let mut state = StateFile::default();
+        state.preferences.window_geometry = Some(geometry);
+
+        let encoded = serde_json::to_vec(&state).unwrap();
+        let decoded: StateFile = serde_json::from_slice(&encoded).unwrap();
+
+        assert_eq!(decoded.preferences.window_geometry, Some(geometry));
+    }
+
+    #[test]
+    fn old_window_geometry_defaults_to_not_maximized() {
+        let state: StateFile = serde_json::from_str(
+            r#"{"preferences":{"window_geometry":{"x":10,"y":20,"width":800,"height":600}}}"#,
+        )
+        .unwrap();
+
+        assert!(!state.preferences.window_geometry.unwrap().maximized);
     }
 
     #[test]
