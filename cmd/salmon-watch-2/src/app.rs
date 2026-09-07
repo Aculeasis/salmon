@@ -146,14 +146,23 @@ fn install_tray_callbacks(
     let geometry_for_toggle = geometry.clone();
     tray.on_toggle_window(move || {
         if let Some(window) = window_weak.upgrade() {
-            if window.window().is_visible() {
-                if let Err(error) = geometry_for_toggle.hide(window.window()) {
-                    eprintln!("salmon-watch-2: failed to hide window: {error:#}");
+            match tray_toggle_action(
+                window.window().is_visible(),
+                window_has_focus(window.window()),
+            ) {
+                TrayToggleAction::Hide => {
+                    if let Err(error) = geometry_for_toggle.hide(window.window()) {
+                        eprintln!("salmon-watch-2: failed to hide window: {error:#}");
+                    }
                 }
-            } else {
-                if let Err(error) = geometry_for_toggle.show(window.window()) {
-                    eprintln!("salmon-watch-2: failed to show window: {error:#}");
+                TrayToggleAction::Show => {
+                    if let Err(error) = geometry_for_toggle.show(window.window()) {
+                        eprintln!("salmon-watch-2: failed to show window: {error:#}");
+                        return;
+                    }
+                    activate_window(window.window());
                 }
+                TrayToggleAction::Activate => activate_window(window.window()),
             }
         }
     });
@@ -197,6 +206,27 @@ fn activate_window(window: &slint::Window) {
         window.set_minimized(false);
         window.focus_window();
     });
+}
+
+fn window_has_focus(window: &slint::Window) -> bool {
+    window
+        .with_winit_window(|window| window.has_focus())
+        .unwrap_or(false)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TrayToggleAction {
+    Show,
+    Activate,
+    Hide,
+}
+
+fn tray_toggle_action(visible: bool, focused: bool) -> TrayToggleAction {
+    match (visible, focused) {
+        (false, _) => TrayToggleAction::Show,
+        (true, false) => TrayToggleAction::Activate,
+        (true, true) => TrayToggleAction::Hide,
+    }
 }
 
 fn install_ctrl_c_handler(tray: &SalmonTray) -> Result<()> {
@@ -276,6 +306,28 @@ mod tests {
     use crate::persistence::{Store, WindowGeometry};
     use crate::window_geometry::WindowGeometryManager;
     use slint::ComponentHandle;
+
+    #[test]
+    fn tray_toggle_shows_activates_or_hides_based_on_window_state() {
+        use super::TrayToggleAction;
+
+        assert_eq!(
+            super::tray_toggle_action(false, false),
+            TrayToggleAction::Show
+        );
+        assert_eq!(
+            super::tray_toggle_action(false, true),
+            TrayToggleAction::Show
+        );
+        assert_eq!(
+            super::tray_toggle_action(true, false),
+            TrayToggleAction::Activate
+        );
+        assert_eq!(
+            super::tray_toggle_action(true, true),
+            TrayToggleAction::Hide
+        );
+    }
 
     #[test]
     #[ignore = "requires a real desktop window manager"]
