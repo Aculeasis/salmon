@@ -329,7 +329,9 @@ export component MainWindow inherits Window {
         // intrinsic minimum width, any remaining overflow becomes scrollable.
         viewport-width: max(self.visible-width, content.min-width);
         content := VerticalBox {
-            padding: 22px;
+            padding-left: 22px;
+            padding-right: 22px;
+            padding-bottom: 22px;
             spacing: 0px;
             // Keep every section at its preferred height. Any viewport space
             // left over belongs below the content instead of being distributed
@@ -369,8 +371,6 @@ export component MainWindow inherits Window {
                     }
                 }
             }
-
-            Rectangle { height: 12px; }
 
             SectionHeading {
                 label: root.server-summary;
