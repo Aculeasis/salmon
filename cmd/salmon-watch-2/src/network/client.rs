@@ -24,6 +24,7 @@ use crate::config::{AuthConfig, ServerConfig, TlsConfig};
 use crate::domain::Event;
 
 const MAX_MESSAGE_BYTES: usize = 1 << 20;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const RECONNECT_STEP: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(10);
@@ -31,6 +32,7 @@ const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(10);
 #[derive(Clone, Copy)]
 struct ClientOptions {
     max_message_bytes: usize,
+    connect_timeout: Duration,
     read_timeout: Duration,
     reconnect_step: Duration,
     max_reconnect_delay: Duration,
@@ -90,6 +92,7 @@ impl Default for ClientOptions {
     fn default() -> Self {
         Self {
             max_message_bytes: MAX_MESSAGE_BYTES,
+            connect_timeout: CONNECT_TIMEOUT,
             read_timeout: READ_TIMEOUT,
             reconnect_step: RECONNECT_STEP,
             max_reconnect_delay: MAX_RECONNECT_DELAY,
@@ -168,7 +171,20 @@ async fn run_connection_loop_with_options(
         };
         log::info!("server {} connecting to {}", server.id, request.uri());
         let connected = tokio::select! {
-            result = connect(&server, &setup, request, options) => result,
+            result = timeout(
+                options.connect_timeout,
+                connect(&server, &setup, request, options),
+            ) => match result {
+                Ok(Ok(connected)) => Ok(connected),
+                Ok(Err(error)) => Err(websocket_connection_error(
+                    &error,
+                    setup.bearer.is_some(),
+                )),
+                Err(_) => Err(format!(
+                    "connection attempt timed out after {} seconds",
+                    options.connect_timeout.as_secs(),
+                )),
+            },
             _ = shutdown.changed() => return,
         };
         let mut socket = match connected {
@@ -177,7 +193,6 @@ async fn run_connection_loop_with_options(
                 if tunneled && tunnel_stopped(&mut shutdown).await {
                     return;
                 }
-                let error = websocket_connection_error(&error, setup.bearer.is_some());
                 log::warn!("server {} connection failed: {error}", server.id);
                 let _ = events
                     .send(Event::Disconnected {
@@ -212,7 +227,7 @@ async fn run_connection_loop_with_options(
             let message = match next {
                 Err(_) => {
                     break format!(
-                        "no server data received for {} seconds",
+                        "no server data received for {} seconds; reconnecting",
                         options.read_timeout.as_secs()
                     );
                 }
@@ -460,6 +475,7 @@ mod tests {
     fn fast_options() -> ClientOptions {
         ClientOptions {
             max_message_bytes: MAX_MESSAGE_BYTES,
+            connect_timeout: Duration::from_secs(2),
             read_timeout: Duration::from_secs(2),
             reconnect_step: Duration::from_millis(10),
             max_reconnect_delay: Duration::from_millis(20),
@@ -657,7 +673,8 @@ mod tests {
         let Event::Disconnected { error, .. } = next(&mut events_rx).await else {
             panic!("expected read timeout to disconnect the client");
         };
-        assert!(error.starts_with("no server data received"));
+        assert!(error.starts_with("no server data received for "));
+        assert!(error.ends_with("; reconnecting"));
 
         shutdown_tx.send(true).unwrap();
         timeout(Duration::from_secs(3), client)
@@ -667,6 +684,46 @@ mod tests {
         timeout(Duration::from_secs(3), server_task)
             .await
             .expect("server did not observe timeout disconnect")
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stalled_websocket_handshake_times_out_and_retries() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let server_task = tokio::spawn(async move {
+            let (first, _) = listener.accept().await.unwrap();
+            let (second, _) = timeout(Duration::from_secs(3), listener.accept())
+                .await
+                .expect("client did not retry after its connection timeout")
+                .unwrap();
+            drop((first, second));
+        });
+        let (events_tx, mut events_rx) = mpsc::channel(16);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let mut options = fast_options();
+        options.connect_timeout = Duration::from_millis(30);
+        let client = tokio::spawn(run_connection_loop_with_options(
+            server(address),
+            events_tx,
+            shutdown_rx,
+            false,
+            options,
+        ));
+
+        let Event::Disconnected { error, .. } = next(&mut events_rx).await else {
+            panic!("expected stalled handshake to disconnect the client");
+        };
+        assert!(error.starts_with("connection attempt timed out after "));
+        timeout(Duration::from_secs(3), server_task)
+            .await
+            .expect("server did not observe reconnect attempt")
+            .unwrap();
+
+        shutdown_tx.send(true).unwrap();
+        timeout(Duration::from_secs(3), client)
+            .await
+            .expect("client did not stop")
             .unwrap();
     }
 
