@@ -437,6 +437,7 @@ mod tests {
         for entry in [&autostart, &launcher] {
             assert!(entry.contains("Type=Application"));
             assert!(entry.contains("Icon=salmon-watch"));
+            assert!(entry.contains("X-Salmon-Watch-Desktop-Entry-Version=2"));
             assert!(entry.contains("Terminal=false"));
             assert!(entry.contains("\"/opt/Salmon Watch/salmon-watch\""));
             assert!(entry.contains(&desktop_exec_argument(layout.config.to_str().unwrap())));
