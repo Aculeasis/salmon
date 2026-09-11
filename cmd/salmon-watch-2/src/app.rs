@@ -9,12 +9,12 @@ use crate::logging::{self, LogLevel};
 use crate::notification::{DesktopNotificationSink, NotificationSink};
 use crate::persistence::{self, StateFile, Store, Theme};
 use crate::runtime::{Command, RuntimeHandle};
-use crate::tray::TrayIcons;
+use crate::tray::{FlashCycle, TrayFlashController, TrayIcons};
 use crate::ui::{MainWindow, SalmonTray, apply_snapshot};
 use crate::window_geometry::WindowGeometryManager;
 use anyhow::{Context, Result};
 use slint::winit_030::WinitWindowAccessor;
-use slint::{CloseRequestResponse, ComponentHandle, Timer, TimerMode};
+use slint::{CloseRequestResponse, ComponentHandle, Timer};
 
 pub fn execute() -> Result<()> {
     let options = cli::parse(std::env::args_os().skip(1))?;
@@ -91,16 +91,20 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
     install_ctrl_c_handler(&tray)?;
 
     let icons = Arc::new(TrayIcons::load()?);
-    let flash_timer = install_flash_timer(&window, &tray, icons.transparent_icon());
+    let flash = TrayFlashController::default();
     let window_weak = window.as_weak();
     let tray_weak = tray.as_weak();
     let publish_icons = icons.clone();
+    let publish_flash = flash.clone();
     let publish = Arc::new(move |snapshot| {
         let tray_weak = tray_weak.clone();
         let icons = publish_icons.clone();
+        let flash = publish_flash.clone();
         if let Err(error) = window_weak.upgrade_in_event_loop(move |window| {
-            if let Some(tray) = tray_weak.upgrade() {
-                apply_snapshot(&window, &tray, &icons, snapshot);
+            if let Some(tray) = tray_weak.upgrade()
+                && let Some(cycle) = apply_snapshot(&window, &tray, &icons, &flash, snapshot)
+            {
+                schedule_flash_tick(&window, &tray, icons.transparent_icon(), flash, cycle);
             }
         }) {
             log::error!("failed to publish UI state: {error}");
@@ -131,7 +135,6 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
         log::error!("failed to save window geometry during shutdown: {error:#}");
     }
     runtime.shutdown();
-    drop(flash_timer);
     log::info!("shutdown complete");
     event_loop_result?;
     geometry_result?;
@@ -353,27 +356,29 @@ fn install_ctrl_c_handler(tray: &SalmonTray) -> Result<()> {
     .context("failed to install Ctrl+C handler")
 }
 
-fn install_flash_timer(window: &MainWindow, tray: &SalmonTray, transparent: slint::Image) -> Timer {
-    let timer = Timer::default();
+fn schedule_flash_tick(
+    window: &MainWindow,
+    tray: &SalmonTray,
+    transparent: slint::Image,
+    flash: TrayFlashController,
+    cycle: FlashCycle,
+) {
     let window_weak = window.as_weak();
     let tray_weak = tray.as_weak();
-    let mut showing_solid = true;
-    timer.start(
-        TimerMode::Repeated,
-        std::time::Duration::from_millis(500),
-        move || {
-            let (Some(window), Some(tray)) = (window_weak.upgrade(), tray_weak.upgrade()) else {
-                return;
-            };
-            showing_solid = !showing_solid;
-            tray.set_tray_icon(if !window.get_tray_flashing() || showing_solid {
-                window.get_current_tray_icon()
-            } else {
-                transparent.clone()
-            });
-        },
-    );
-    timer
+    Timer::single_shot(std::time::Duration::from_millis(500), move || {
+        let (Some(window), Some(tray)) = (window_weak.upgrade(), tray_weak.upgrade()) else {
+            return;
+        };
+        let Some(showing_solid) = flash.tick(cycle) else {
+            return;
+        };
+        tray.set_tray_icon(if showing_solid {
+            window.get_current_tray_icon()
+        } else {
+            transparent.clone()
+        });
+        schedule_flash_tick(&window, &tray, transparent, flash, cycle);
+    });
 }
 
 fn install_incident_actions(window: &MainWindow, commands: tokio::sync::mpsc::Sender<Command>) {

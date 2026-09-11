@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use image::{Rgba, RgbaImage};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
+use std::sync::{Arc, Mutex};
 
 const UNKNOWN_ICON: &[u8] = include_bytes!("../assets/tray/gray.png");
 const OK_ICON: &[u8] = include_bytes!("../assets/tray/green.png");
@@ -33,6 +34,21 @@ impl TrayState {
         !matches!(self.alerting, OverallState::Unknown | OverallState::Ok)
     }
 
+    fn icon_identity(self) -> TrayIconIdentity {
+        if self.alerting == OverallState::Unknown {
+            TrayIconIdentity::Unknown {
+                unknown_server_count: self.unknown_server_count,
+                server_count: self.server_count,
+                snoozed: self.snoozed,
+            }
+        } else {
+            TrayIconIdentity::Known {
+                alerting: self.alerting,
+                snoozed: self.snoozed,
+            }
+        }
+    }
+
     pub fn status_title(self) -> String {
         let noun = if self.alerting_count == 1 {
             "incident"
@@ -44,6 +60,72 @@ impl TrayState {
             title.push_str(&format!(" + {} snoozed", self.snoozed_count));
         }
         title
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TrayIconIdentity {
+    Unknown {
+        unknown_server_count: usize,
+        server_count: usize,
+        snoozed: Option<OverallState>,
+    },
+    Known {
+        alerting: OverallState,
+        snoozed: Option<OverallState>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FlashCycle {
+    generation: u64,
+}
+
+#[derive(Debug, Default)]
+struct FlashState {
+    icon: Option<TrayIconIdentity>,
+    flashing: bool,
+    showing_solid: bool,
+    generation: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TrayFlashController {
+    state: Arc<Mutex<FlashState>>,
+}
+
+impl TrayFlashController {
+    /// Records a rendered tray state. `Some` starts a new flash cycle; `None`
+    /// means the existing icon and cadence must be left untouched.
+    pub fn apply(&self, state: TrayState) -> Option<FlashCycle> {
+        let mut current = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let icon = state.icon_identity();
+        if current.icon == Some(icon) {
+            return None;
+        }
+        current.icon = Some(icon);
+        current.flashing = state.is_flashing();
+        current.showing_solid = true;
+        current.generation = current.generation.wrapping_add(1);
+        Some(FlashCycle {
+            generation: current.generation,
+        })
+    }
+
+    /// Advances an active cycle. Returns whether the solid icon should be
+    /// shown, or `None` if this cycle was replaced or flashing has stopped.
+    pub fn tick(&self, cycle: FlashCycle) -> Option<bool> {
+        let mut current = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if current.generation != cycle.generation || !current.flashing {
+            return None;
+        }
+        current.showing_solid = !current.showing_solid;
+        Some(current.showing_solid)
+    }
+
+    pub fn is_flashing(&self, cycle: FlashCycle) -> bool {
+        let current = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        current.generation == cycle.generation && current.flashing
     }
 }
 
@@ -272,6 +354,63 @@ mod tests {
             state.alerting = overall;
             assert!(!state.is_flashing());
         }
+    }
+
+    #[test]
+    fn unchanged_flashing_icon_preserves_its_existing_phase() {
+        let controller = TrayFlashController::default();
+        let state = mock_state();
+        let cycle = controller.apply(state).unwrap();
+
+        assert_eq!(controller.tick(cycle), Some(false));
+
+        let count_only_update = TrayState {
+            alerting_count: state.alerting_count + 1,
+            snoozed_count: state.snoozed_count + 1,
+            ..state
+        };
+        assert_eq!(controller.apply(count_only_update), None);
+        assert_eq!(controller.tick(cycle), Some(true));
+    }
+
+    #[test]
+    fn changed_icon_restarts_flashing_from_a_full_solid_phase() {
+        let controller = TrayFlashController::default();
+        let warning_cycle = controller.apply(mock_state()).unwrap();
+        assert_eq!(controller.tick(warning_cycle), Some(false));
+
+        let error_cycle = controller
+            .apply(TrayState {
+                alerting: OverallState::Error,
+                ..mock_state()
+            })
+            .unwrap();
+        assert_eq!(controller.tick(warning_cycle), None);
+        assert_eq!(controller.tick(error_cycle), Some(false));
+
+        controller
+            .apply(TrayState {
+                alerting: OverallState::Ok,
+                ..mock_state()
+            })
+            .unwrap();
+        assert_eq!(controller.tick(error_cycle), None);
+    }
+
+    #[test]
+    fn irrelevant_server_counts_do_not_restart_an_alerting_icon() {
+        let controller = TrayFlashController::default();
+        let state = mock_state();
+        controller.apply(state).unwrap();
+
+        assert_eq!(
+            controller.apply(TrayState {
+                unknown_server_count: 1,
+                server_count: 3,
+                ..state
+            }),
+            None
+        );
     }
 
     #[test]

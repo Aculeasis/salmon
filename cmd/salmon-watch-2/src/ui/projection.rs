@@ -5,14 +5,15 @@ use slint::{Model, ModelRc, VecModel};
 
 use super::{IncidentView, MainWindow, SalmonTray, ServerView};
 use crate::domain::{Incident, IncidentState, OverallState as DomainOverallState, UiSnapshot};
-use crate::tray::{OverallState, TrayIcons, TrayState};
+use crate::tray::{FlashCycle, OverallState, TrayFlashController, TrayIcons, TrayState};
 
 pub fn apply_snapshot(
     window: &MainWindow,
     tray: &SalmonTray,
     icons: &TrayIcons,
+    flash: &TrayFlashController,
     snapshot: UiSnapshot,
-) {
+) -> Option<FlashCycle> {
     let now_millis = Utc::now().timestamp_millis();
     let online = snapshot
         .servers
@@ -81,12 +82,17 @@ pub fn apply_snapshot(
         snoozed: snapshot.snoozed_state.map(overall),
         snoozed_count: snapshot.snoozed.len(),
     };
-    if let Ok(icon) = icons.icon(tray_state) {
+    let flash_cycle = if let Ok(icon) = icons.icon(tray_state) {
         window.set_current_tray_icon(icon.clone());
-        tray.set_tray_icon(icon);
-    }
+        flash.apply(tray_state).and_then(|cycle| {
+            tray.set_tray_icon(icon);
+            flash.is_flashing(cycle).then_some(cycle)
+        })
+    } else {
+        None
+    };
     tray.set_status_title(tray_state.status_title().into());
-    window.set_tray_flashing(tray_state.is_flashing());
+    flash_cycle
 }
 
 fn update_rows_in_place<T>(
