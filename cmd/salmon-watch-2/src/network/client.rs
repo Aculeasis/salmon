@@ -115,8 +115,10 @@ pub(super) async fn run_connection_loop(
     shutdown: watch::Receiver<bool>,
     tunneled: bool,
 ) {
+    let server_id = server.id.clone();
     run_connection_loop_with_options(server, events, shutdown, tunneled, ClientOptions::default())
         .await;
+    log::info!("server {server_id} WebSocket client stopped");
 }
 
 async fn run_connection_loop_with_options(
@@ -164,6 +166,7 @@ async fn run_connection_loop_with_options(
                 return;
             }
         };
+        log::info!("server {} connecting to {}", server.id, request.uri());
         let connected = tokio::select! {
             result = connect(&server, &setup, request, options) => result,
             _ = shutdown.changed() => return,
@@ -189,6 +192,7 @@ async fn run_connection_loop_with_options(
             }
         };
         reconnect_delay = Duration::ZERO;
+        log::info!("server {} connected", server.id);
         if events
             .send(Event::Connected {
                 server_id: server.id.clone(),

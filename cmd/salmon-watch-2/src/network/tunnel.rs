@@ -65,8 +65,10 @@ pub(crate) async fn run(
     events: mpsc::Sender<Event>,
     shutdown: watch::Receiver<bool>,
 ) {
+    let server_id = server.id.clone();
     let spec = CommandSpec::for_server(&server).expect("tunneled server has an SSH command");
     run_with_spec(server, spec, events, shutdown, DEFAULT_RESTART_DELAY).await;
+    log::info!("server {server_id} SSH tunnel stopped");
 }
 
 async fn run_with_spec(

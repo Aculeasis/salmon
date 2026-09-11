@@ -50,11 +50,29 @@ impl log::Log for StderrLogger {
 
     fn log(&self, record: &log::Record<'_>) {
         if self.enabled(record.metadata()) {
-            eprintln!("{} salmon-watch-2: {}", record.level(), record.args());
+            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+            let component = component_name(record.target());
+            if component.is_empty() {
+                eprintln!(
+                    "{timestamp} {} salmon-watch-2: {}",
+                    record.level(),
+                    record.args()
+                );
+            } else {
+                eprintln!(
+                    "{timestamp} {} salmon-watch-2[{component}]: {}",
+                    record.level(),
+                    record.args()
+                );
+            }
         }
     }
 
     fn flush(&self) {}
+}
+
+fn component_name(target: &str) -> &str {
+    target.strip_prefix("salmon_watch_2::").unwrap_or_default()
 }
 
 static LOGGER: StderrLogger = StderrLogger;
@@ -84,5 +102,16 @@ mod tests {
         assert_eq!("warning".parse::<LogLevel>().unwrap(), LogLevel::Warn);
         assert_eq!("error".parse::<LogLevel>().unwrap(), LogLevel::Error);
         assert!("quiet".parse::<LogLevel>().is_err());
+    }
+
+    #[test]
+    fn derives_readable_component_names_from_log_targets() {
+        assert_eq!(component_name("salmon_watch_2"), "");
+        assert_eq!(component_name("salmon_watch_2::runtime"), "runtime");
+        assert_eq!(
+            component_name("salmon_watch_2::network::client"),
+            "network::client"
+        );
+        assert_eq!(component_name("some_dependency"), "");
     }
 }

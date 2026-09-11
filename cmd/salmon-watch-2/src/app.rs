@@ -63,13 +63,21 @@ pub fn execute() -> Result<()> {
 
 fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Result<()> {
     let config = Config::load(&config_path)?;
+    log::info!(
+        "starting with config {} ({} servers, window {})",
+        config_path.display(),
+        config.ws_client.servers.len(),
+        if start_hidden { "hidden" } else { "visible" }
+    );
     let state_path = persistence::default_state_path()?;
+    log::debug!("loading persisted state from {}", state_path.display());
     let store = Store::new(state_path);
     let persisted = store.load()?;
     let snoozes = persisted.decoded_snoozes()?;
     let window = MainWindow::new().context("failed to create native window")?;
     install_scale_logging(&window, automatic_scale);
     let tray = SalmonTray::new().context("failed to create system tray icon")?;
+    log::info!("UI and system tray initialized");
     let geometry = WindowGeometryManager::new(store.clone(), persisted.preferences.window_geometry);
 
     apply_preferences(&window, &persisted);
@@ -103,6 +111,7 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
         persist_store.update(|state| state.replace_snoozes(snoozes))
     });
     let runtime = RuntimeHandle::start(config, snoozes, publish, persist)?;
+    log::debug!("application runtime started");
     install_incident_actions(&window, runtime.commands());
 
     if !start_hidden {
@@ -111,12 +120,21 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
 
     // The tray keeps the event loop alive when --start-hidden is used or after
     // the status window is closed.
-    slint::run_event_loop().context("native event loop failed")?;
-    if window.window().is_visible() {
-        geometry.save(window.window())?;
+    let event_loop_result = slint::run_event_loop().context("native event loop failed");
+    log::info!("shutting down");
+    let geometry_result = if window.window().is_visible() {
+        geometry.save(window.window())
+    } else {
+        Ok(())
+    };
+    if let Err(error) = &geometry_result {
+        log::error!("failed to save window geometry during shutdown: {error:#}");
     }
     runtime.shutdown();
     drop(flash_timer);
+    log::info!("shutdown complete");
+    event_loop_result?;
+    geometry_result?;
     Ok(())
 }
 
@@ -326,6 +344,7 @@ fn tray_toggle_action(visible: bool, focused: bool) -> TrayToggleAction {
 fn install_ctrl_c_handler(tray: &SalmonTray) -> Result<()> {
     let tray_weak = tray.as_weak();
     ctrlc::set_handler(move || {
+        log::info!("received Ctrl+C; shutting down");
         let tray_weak = tray_weak.clone();
         if let Err(error) = tray_weak.upgrade_in_event_loop(|tray| tray.invoke_exit()) {
             log::error!("failed to request shutdown after Ctrl+C: {error}");
