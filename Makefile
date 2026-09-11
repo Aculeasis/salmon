@@ -16,7 +16,9 @@ LDFLAGS := -s -w \
 	-X 'github.com/dimonomid/salmon/version.builtBy=make'
 
 .PHONY: all
-all: clean salmon salmon-watch salmon-watch-2
+# (for now intentionally skipping salmon-watch-2 since it's super heavy to
+# build and is experimental)
+all: clean salmon salmon-watch
 
 .PHONY: test
 test:
