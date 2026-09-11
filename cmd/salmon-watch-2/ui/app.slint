@@ -289,6 +289,9 @@ export component MainWindow inherits Window {
     title: "Salmon Watch";
     icon: @image-url("app-icon.svg");
     default-font-family: "Departure Mono";
+    // Slint's default is 12px. Increase body, table, incident, and control
+    // typography somewhat.
+    default-font-size: 13px;
     preferred-width: 860px;
     preferred-height: 700px;
     min-width: 260px;
