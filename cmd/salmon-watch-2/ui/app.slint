@@ -6,6 +6,8 @@ export struct ServerView {
     connection: string,
     last-heartbeat: string,
     connected: bool,
+    heartbeat-warning: bool,
+    heartbeat-overdue: bool,
 }
 
 export struct IncidentView {
@@ -397,7 +399,16 @@ export component MainWindow inherits Window {
                     spacing: 12px;
                     Text { text: server.id; color: root.foreground-color; width: root.server-id-column-width; wrap: char-wrap; }
                     Text { text: server.connection; color: server.connected ? root.connected-color : root.disconnected-color; width: root.server-connection-column-width; wrap: word-wrap; }
-                    Text { text: server.last-heartbeat; color: server.connected ? root.foreground-color : root.disconnected-color; horizontal-stretch: 1; wrap: word-wrap; }
+                    Text {
+                        text: server.last-heartbeat;
+                        color: server.heartbeat-overdue
+                            ? root.disconnected-color
+                            : server.heartbeat-warning
+                                ? root.warning-color
+                                : root.foreground-color;
+                        horizontal-stretch: 1;
+                        wrap: word-wrap;
+                    }
                 }
                 Rectangle { height: 1px; background: root.border-color-value; }
             }

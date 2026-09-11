@@ -26,18 +26,28 @@ pub fn apply_snapshot(
     let servers: Vec<_> = snapshot
         .servers
         .iter()
-        .map(|server| ServerView {
-            id: server.id.clone().into(),
-            connection: if server.connected {
-                "online"
-            } else if server.initialized {
-                "offline"
-            } else {
-                "connecting"
+        .map(|server| {
+            let heartbeat_status = heartbeat_status(
+                server
+                    .last_heartbeat_at
+                    .map(|timestamp| timestamp.saturating_mul(1_000)),
+                now_millis,
+            );
+            ServerView {
+                id: server.id.clone().into(),
+                connection: if server.connected {
+                    "online"
+                } else if server.initialized {
+                    "offline"
+                } else {
+                    "connecting"
+                }
+                .into(),
+                last_heartbeat: format_unix_timestamp(server.last_heartbeat_at, now_millis).into(),
+                connected: server.connected,
+                heartbeat_warning: heartbeat_status == HeartbeatStatus::Warning,
+                heartbeat_overdue: heartbeat_status == HeartbeatStatus::Overdue,
             }
-            .into(),
-            last_heartbeat: format_unix_timestamp(server.last_heartbeat_at, now_millis).into(),
-            connected: server.connected,
         })
         .collect();
     let current_servers = window.get_servers();
@@ -168,6 +178,27 @@ fn format_unix_timestamp(value: Option<i64>, now_millis: i64) -> String {
         return "never".into();
     };
     format_timestamp_millis(value.saturating_mul(1_000), now_millis)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HeartbeatStatus {
+    Normal,
+    Warning,
+    Overdue,
+}
+
+fn heartbeat_status(value_millis: Option<i64>, now_millis: i64) -> HeartbeatStatus {
+    let Some(value_millis) = value_millis else {
+        return HeartbeatStatus::Normal;
+    };
+    let age = i128::from(now_millis) - i128::from(value_millis);
+    if age < 15_000 {
+        HeartbeatStatus::Normal
+    } else if age < 30_000 {
+        HeartbeatStatus::Warning
+    } else {
+        HeartbeatStatus::Overdue
+    }
 }
 
 fn format_timestamp_millis(value_millis: i64, now_millis: i64) -> String {
@@ -316,6 +347,25 @@ mod tests {
         }
         assert_eq!(format_relative(NOW + 73 * 60_000, NOW), "in 1h 13m");
         assert_eq!(format_relative(NOW + 14_001, NOW), "in 15s");
+    }
+
+    #[test]
+    fn heartbeat_highlighting_uses_the_same_boundaries_as_the_web_client() {
+        const NOW: i64 = 2_000_000_000;
+        for value in [None, Some(NOW + 1), Some(NOW - 14_999)] {
+            assert_eq!(heartbeat_status(value, NOW), HeartbeatStatus::Normal);
+        }
+        for value in [NOW - 15_000, NOW - 29_999] {
+            assert_eq!(heartbeat_status(Some(value), NOW), HeartbeatStatus::Warning);
+        }
+        assert_eq!(
+            heartbeat_status(Some(NOW - 30_000), NOW),
+            HeartbeatStatus::Overdue
+        );
+        assert_eq!(
+            heartbeat_status(Some(NOW - 3 * 60 * 60 * 1_000), NOW),
+            HeartbeatStatus::Overdue
+        );
     }
 
     #[test]

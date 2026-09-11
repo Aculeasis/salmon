@@ -430,6 +430,7 @@ fn unix_now() -> i64 {
 mod tests {
     use super::*;
     use crate::config::{SshTunnelConfig, TunnelConfig};
+    use futures_util::StreamExt;
     use tokio::net::TcpListener;
     use tokio::time::timeout;
 
@@ -638,6 +639,77 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(matches!(ready, Event::TunnelReady { .. }));
+
+        shutdown_tx.send(true).unwrap();
+        timeout(Duration::from_secs(3), task)
+            .await
+            .expect("tunnel task did not stop")
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn tunnel_death_closes_an_active_websocket_and_reports_only_tunnel_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = plain_server(listener.local_addr().unwrap().to_string());
+        let websocket_server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket.next().await
+        });
+
+        let directory = tempfile::tempdir().unwrap();
+        let stop = directory.path().join("stop-tunnel");
+        let spec = CommandSpec {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                format!(
+                    "echo {READY_MARKER}; while [ ! -e \"$1\" ]; do sleep 0.01; done; echo tunnel-process-died >&2; exit 7"
+                ),
+                "sh".into(),
+                stop.to_string_lossy().into_owned(),
+            ],
+            readiness_marker: READY_MARKER.into(),
+        };
+        let (events_tx, mut events_rx) = mpsc::channel(16);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(run_with_spec(
+            server,
+            spec,
+            events_tx,
+            shutdown_rx,
+            Duration::from_secs(60),
+        ));
+
+        let ready = timeout(Duration::from_secs(3), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(ready, Event::TunnelReady { .. }));
+        let connected = timeout(Duration::from_secs(3), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(connected, Event::Connected { .. }));
+
+        std::fs::write(&stop, b"stop").unwrap();
+        let failure = timeout(Duration::from_secs(3), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            failure,
+            Event::TunnelFailed { error, .. } if error.contains("tunnel-process-died")
+        ));
+        assert!(
+            events_rx.try_recv().is_err(),
+            "tunnel death emitted a redundant WebSocket disconnect"
+        );
+        timeout(Duration::from_secs(3), websocket_server)
+            .await
+            .expect("server did not observe the WebSocket closing")
+            .unwrap();
 
         shutdown_tx.send(true).unwrap();
         timeout(Duration::from_secs(3), task)
