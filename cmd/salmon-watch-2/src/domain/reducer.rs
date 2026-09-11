@@ -115,6 +115,8 @@ impl Reducer {
     }
 
     fn connected(&mut self, id: &str, at: i64) -> Transition {
+        let incident_key = format!("internal.connection.{id}");
+        let incident_is_snoozed = self.is_snoozed(&incident_key, at);
         let Some(server) = self.state.servers.get_mut(id) else {
             return Transition::default();
         };
@@ -128,11 +130,11 @@ impl Reducer {
         let removed = self
             .state
             .internal_incidents
-            .remove(&format!("internal.connection.{id}"))
+            .remove(&incident_key)
             .is_some();
-        let effects = removed
+        let effects = (removed && !incident_is_snoozed)
             .then(|| Effect::Notify {
-                title: format!("OK: internal.connection.{id}"),
+                title: format!("OK: {incident_key}"),
                 body: String::new(),
             })
             .into_iter()
@@ -144,6 +146,8 @@ impl Reducer {
     }
 
     fn disconnected(&mut self, id: &str, at: i64, error: String) -> Transition {
+        let key = format!("internal.connection.{id}");
+        let incident_is_snoozed = self.is_snoozed(&key, at);
         let Some(server) = self.state.servers.get_mut(id) else {
             return Transition::default();
         };
@@ -162,7 +166,6 @@ impl Reducer {
                 }
             }
         }
-        let key = format!("internal.connection.{id}");
         let mut effects = Vec::new();
         let internal_changed = if error.is_empty() {
             self.state.internal_incidents.remove(&key).is_some()
@@ -174,10 +177,12 @@ impl Reducer {
                     true
                 }
                 None => {
-                    effects.push(Effect::Notify {
-                        title: format!("error: {key}"),
-                        body: error.clone(),
-                    });
+                    if !incident_is_snoozed {
+                        effects.push(Effect::Notify {
+                            title: format!("error: {key}"),
+                            body: error.clone(),
+                        });
+                    }
                     self.state.internal_incidents.insert(
                         key.clone(),
                         Incident {
@@ -198,15 +203,16 @@ impl Reducer {
         }
     }
 
-    fn tunnel_ready(&mut self, id: &str, _at: i64) -> Transition {
+    fn tunnel_ready(&mut self, id: &str, at: i64) -> Transition {
         if !self.state.servers.contains_key(id) {
             return Transition::default();
         }
         let key = format!("internal.tunnel.{id}");
+        let incident_is_snoozed = self.is_snoozed(&key, at);
         let removed = self.state.internal_incidents.remove(&key).is_some();
         Transition {
             changed: removed,
-            effects: removed
+            effects: (removed && !incident_is_snoozed)
                 .then(|| Effect::Notify {
                     title: format!("OK: {key}"),
                     body: String::new(),
@@ -217,6 +223,8 @@ impl Reducer {
     }
 
     fn tunnel_failed(&mut self, id: &str, at: i64, error: String) -> Transition {
+        let key = format!("internal.tunnel.{id}");
+        let incident_is_snoozed = self.is_snoozed(&key, at);
         let Some(server) = self.state.servers.get_mut(id) else {
             return Transition::default();
         };
@@ -244,7 +252,6 @@ impl Reducer {
             .internal_incidents
             .remove(&format!("internal.connection.{id}"))
             .is_some();
-        let key = format!("internal.tunnel.{id}");
         let mut effects = Vec::new();
         let internal_changed = match self.state.internal_incidents.get_mut(&key) {
             Some(incident) if incident.details == error => false,
@@ -253,10 +260,12 @@ impl Reducer {
                 true
             }
             None => {
-                effects.push(Effect::Notify {
-                    title: format!("error: {key}"),
-                    body: error.clone(),
-                });
+                if !incident_is_snoozed {
+                    effects.push(Effect::Notify {
+                        title: format!("error: {key}"),
+                        body: error.clone(),
+                    });
+                }
                 self.state.internal_incidents.insert(
                     key.clone(),
                     Incident {

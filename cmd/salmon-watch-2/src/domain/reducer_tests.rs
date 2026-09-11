@@ -131,16 +131,111 @@ fn deltas_drive_notifications_but_total_drives_state() {
 }
 
 #[test]
-fn snoozed_deltas_do_not_notify() {
+fn snoozed_incident_appearance_resolution_and_reappearance_do_not_notify() {
     let mut r = reducer(&["local"]);
     r.reduce(Event::Snooze {
         key: "local.disk".into(),
         until: 100,
     });
-    let mut data = notification(Vec::new());
+
+    let mut data = notification(vec![incident("disk", IncidentState::Error)]);
     data.added.push(incident("disk", IncidentState::Error));
+    assert!(notify(&mut r, "local", data, 10).effects.is_empty());
+
+    let mut data = notification(Vec::new());
     data.removed.push(incident("disk", IncidentState::Error));
-    assert!(notify(&mut r, "local", data, 50).effects.is_empty());
+    assert!(notify(&mut r, "local", data, 20).effects.is_empty());
+
+    let mut data = notification(vec![incident("disk", IncidentState::Error)]);
+    data.added.push(incident("disk", IncidentState::Error));
+    assert!(notify(&mut r, "local", data, 30).effects.is_empty());
+
+    let snapshot = r.state().snapshot(30);
+    assert!(snapshot.active.is_empty());
+    assert_eq!(snapshot.snoozed[0].incident.key, "local.disk");
+}
+
+#[test]
+fn snoozed_connection_incident_lifecycle_does_not_notify() {
+    let mut r = reducer(&["local"]);
+    r.reduce(Event::Snooze {
+        key: "internal.connection.local".into(),
+        until: 100,
+    });
+
+    assert!(
+        r.reduce(Event::Disconnected {
+            server_id: "local".into(),
+            at: 10,
+            error: "connection refused".into(),
+        })
+        .effects
+        .is_empty()
+    );
+    assert!(
+        r.reduce(Event::Connected {
+            server_id: "local".into(),
+            at: 20,
+        })
+        .effects
+        .is_empty()
+    );
+    assert!(
+        r.reduce(Event::Disconnected {
+            server_id: "local".into(),
+            at: 30,
+            error: "connection refused again".into(),
+        })
+        .effects
+        .is_empty()
+    );
+
+    let snapshot = r.state().snapshot(30);
+    assert!(snapshot.active.is_empty());
+    assert_eq!(
+        snapshot.snoozed[0].incident.key,
+        "internal.connection.local"
+    );
+}
+
+#[test]
+fn snoozed_tunnel_incident_lifecycle_does_not_notify() {
+    let mut r = reducer(&["remote"]);
+    r.reduce(Event::Snooze {
+        key: "internal.tunnel.remote".into(),
+        until: 100,
+    });
+
+    assert!(
+        r.reduce(Event::TunnelFailed {
+            server_id: "remote".into(),
+            at: 10,
+            error: "ssh exited".into(),
+        })
+        .effects
+        .is_empty()
+    );
+    assert!(
+        r.reduce(Event::TunnelReady {
+            server_id: "remote".into(),
+            at: 20,
+        })
+        .effects
+        .is_empty()
+    );
+    assert!(
+        r.reduce(Event::TunnelFailed {
+            server_id: "remote".into(),
+            at: 30,
+            error: "ssh exited again".into(),
+        })
+        .effects
+        .is_empty()
+    );
+
+    let snapshot = r.state().snapshot(30);
+    assert!(snapshot.active.is_empty());
+    assert_eq!(snapshot.snoozed[0].incident.key, "internal.tunnel.remote");
 }
 
 #[test]
