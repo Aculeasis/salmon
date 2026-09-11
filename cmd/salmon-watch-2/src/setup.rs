@@ -10,6 +10,8 @@ use crate::config::Config;
 
 const DEFAULT_CONFIG: &[u8] = include_bytes!("../assets/setup/salmon-watch.yml");
 const APPLICATION_ICON: &[u8] = include_bytes!("../assets/app-icon.svg");
+const DESKTOP_ENTRY_TEMPLATE: &str = include_str!("../assets/setup/salmon-watch.desktop.tpl");
+const DESKTOP_EXEC_PLACEHOLDER: &str = "{{EXEC}}";
 
 #[derive(Clone, Debug)]
 struct InstallPaths {
@@ -196,12 +198,25 @@ fn desktop_entry(executable: &Path, config_filename: &Path, start_hidden: bool) 
         .to_str()
         .context("config path must be valid UTF-8 for a desktop entry")?;
     let hidden = if start_hidden { " --start-hidden" } else { "" };
-    Ok(format!(
-        "[Desktop Entry]\nType=Application\nName=Salmon Watch\nComment=Show Salmon status in the desktop tray\nIcon=salmon-watch\nExec={} --config {}{}\nTerminal=false\n",
+    let command = format!(
+        "{} --config {}{}",
         desktop_exec_argument(executable),
         desktop_exec_argument(config_filename),
         hidden,
-    ))
+    );
+    render_desktop_entry_template(DESKTOP_ENTRY_TEMPLATE, &command)
+}
+
+fn render_desktop_entry_template(template: &str, command: &str) -> Result<String> {
+    let mut parts = template.split(DESKTOP_EXEC_PLACEHOLDER);
+    let before = parts.next().unwrap_or_default();
+    let after = parts
+        .next()
+        .context("desktop entry template is missing {{EXEC}}")?;
+    if parts.next().is_some() {
+        bail!("desktop entry template contains {{EXEC}} more than once");
+    }
+    Ok(format!("{before}{command}{after}"))
 }
 
 fn desktop_exec_argument(argument: &str) -> String {
@@ -425,6 +440,7 @@ mod tests {
             assert!(entry.contains("Terminal=false"));
             assert!(entry.contains("\"/opt/Salmon Watch/salmon-watch\""));
             assert!(entry.contains(&desktop_exec_argument(layout.config.to_str().unwrap())));
+            assert!(!entry.contains(DESKTOP_EXEC_PLACEHOLDER));
         }
         assert!(autostart.contains(" --start-hidden\n"));
         assert!(!launcher.contains("--start-hidden"));
@@ -596,6 +612,16 @@ mod tests {
             shell_argument("/tmp/custom config's.yml"),
             "'/tmp/custom config'\"'\"'s.yml'"
         );
+    }
+
+    #[test]
+    fn desktop_template_requires_exactly_one_exec_placeholder() {
+        assert_eq!(
+            render_desktop_entry_template("before {{EXEC}} after", "command").unwrap(),
+            "before command after"
+        );
+        assert!(render_desktop_entry_template("no placeholder", "command").is_err());
+        assert!(render_desktop_entry_template("{{EXEC}} and {{EXEC}}", "command").is_err());
     }
 
     #[test]
