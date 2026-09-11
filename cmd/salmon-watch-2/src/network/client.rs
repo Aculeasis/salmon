@@ -90,10 +90,7 @@ async fn run_connection_loop_with_options(
                 if tunneled && tunnel_stopped(&mut shutdown).await {
                     return;
                 }
-                eprintln!(
-                    "salmon-watch-2: server {} connection failed: {error}",
-                    server.id
-                );
+                log::warn!("server {} connection failed: {error}", server.id);
                 let _ = events
                     .send(Event::Disconnected {
                         server_id: server.id.clone(),
@@ -196,10 +193,7 @@ async fn run_connection_loop_with_options(
                 _ => {}
             }
         };
-        eprintln!(
-            "salmon-watch-2: server {} connection lost: {disconnect_error}",
-            server.id
-        );
+        log::warn!("server {} connection lost: {disconnect_error}", server.id);
         if tunneled && tunnel_stopped(&mut shutdown).await {
             return;
         }

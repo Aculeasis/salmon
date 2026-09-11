@@ -80,15 +80,16 @@ async fn run_with_spec(
         if *shutdown.borrow() {
             return;
         }
-        eprintln!(
-            "salmon-watch-2: server {} starting SSH tunnel with {}",
-            server.id, spec.program
+        log::info!(
+            "server {} starting SSH tunnel with {}",
+            server.id,
+            spec.program
         );
         let mut child = match spawn(&spec) {
             Ok(child) => child,
             Err(error) => {
                 let details = format!("Failed to start SSH tunnel command: {error}");
-                eprintln!("salmon-watch-2: server {}: {details}", server.id);
+                log::error!("server {}: {details}", server.id);
                 if !send_tunnel_failure(&events, &server.id, details).await
                     || !wait_to_restart(&mut shutdown, restart_delay).await
                 {
@@ -127,7 +128,7 @@ async fn run_with_spec(
 
         match outcome {
             BeforeReady::Ready => {
-                eprintln!("salmon-watch-2: server {} SSH tunnel is ready", server.id);
+                log::info!("server {} SSH tunnel is ready", server.id);
                 if events
                     .send(Event::TunnelReady {
                         server_id: server.id.clone(),
@@ -169,10 +170,7 @@ async fn run_with_spec(
                             &spec.readiness_marker,
                         )
                         .await;
-                        eprintln!(
-                            "salmon-watch-2: server {} SSH tunnel failed: {details}",
-                            server.id
-                        );
+                        log::error!("server {} SSH tunnel failed: {details}", server.id);
                         if !send_tunnel_failure(&events, &server.id, details).await
                             || !wait_to_restart(&mut shutdown, restart_delay).await
                         {
@@ -197,10 +195,7 @@ async fn run_with_spec(
             BeforeReady::Exited(status) => {
                 let details =
                     failure_details(status, stdout_task, stderr_task, &spec.readiness_marker).await;
-                eprintln!(
-                    "salmon-watch-2: server {} SSH tunnel failed: {details}",
-                    server.id
-                );
+                log::error!("server {} SSH tunnel failed: {details}", server.id);
                 if !send_tunnel_failure(&events, &server.id, details).await
                     || !wait_to_restart(&mut shutdown, restart_delay).await
                 {
@@ -249,10 +244,7 @@ async fn stop_child(child: &mut Child) {
 }
 
 async fn wait_to_restart(shutdown: &mut watch::Receiver<bool>, delay: Duration) -> bool {
-    eprintln!(
-        "salmon-watch-2: SSH tunnel will restart in {}s",
-        delay.as_secs_f64()
-    );
+    log::info!("SSH tunnel will restart in {}s", delay.as_secs_f64());
     tokio::select! {
         _ = sleep(delay) => true,
         _ = shutdown.changed() => false,

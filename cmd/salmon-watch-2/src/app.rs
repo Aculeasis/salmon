@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::cli;
 use crate::config::{self, Config};
+use crate::logging::{self, LogLevel};
 use crate::notification::{DesktopNotificationSink, NotificationSink};
 use crate::persistence::{self, StateFile, Store, Theme};
 use crate::runtime::{Command, RuntimeHandle};
@@ -18,10 +19,14 @@ pub fn execute() -> Result<()> {
     let options = cli::parse(std::env::args_os().skip(1))?;
     if options.help {
         println!(
-            "Usage: salmon-watch-2 [--config FILE] [--start-hidden] [--scale FACTOR]\n\nOptions:\n  --config FILE   Configuration file\n  --start-hidden  Start with the status window hidden\n  --scale FACTOR  Set the UI scale factor (must be greater than zero)\n  -h, --help      Print help"
+            "Usage: salmon-watch-2 [--config FILE] [--start-hidden] [--scale FACTOR] [--log-level LEVEL]\n\nOptions:\n  --config FILE      Configuration file\n  --start-hidden     Start with the status window hidden\n  --scale FACTOR     Set the UI scale factor (must be greater than zero)\n  --log-level LEVEL  Set logging verbosity: trace, debug, info, warn, or error (default: info)\n  -h, --help         Print help"
         );
         return Ok(());
     }
+    logging::init(options.log_level.unwrap_or(LogLevel::Info))?;
+    let automatic_scale = options.scale.is_none()
+        && std::env::var_os("SLINT_SCALE_FACTOR").is_none()
+        && std::env::var_os("WINIT_X11_SCALE_FACTOR").is_none();
     if let Some(scale) = options.scale {
         // SAFETY: This runs at the beginning of main, before Slint is initialized
         // and before this process creates any threads that could read the
@@ -29,16 +34,17 @@ pub fn execute() -> Result<()> {
         unsafe { std::env::set_var("SLINT_SCALE_FACTOR", scale.to_string()) };
     }
     let config_path = options.config.unwrap_or(config::default_path()?);
-    run(options.start_hidden, config_path)
+    run(options.start_hidden, config_path, automatic_scale)
 }
 
-fn run(start_hidden: bool, config_path: PathBuf) -> Result<()> {
+fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Result<()> {
     let config = Config::load(&config_path)?;
     let state_path = persistence::default_state_path()?;
     let store = Store::new(state_path);
     let persisted = store.load()?;
     let snoozes = persisted.decoded_snoozes()?;
     let window = MainWindow::new().context("failed to create native window")?;
+    install_scale_logging(&window, automatic_scale);
     let tray = SalmonTray::new().context("failed to create system tray icon")?;
     let geometry = WindowGeometryManager::new(store.clone(), persisted.preferences.window_geometry);
 
@@ -65,7 +71,7 @@ fn run(start_hidden: bool, config_path: PathBuf) -> Result<()> {
                 apply_snapshot(&window, &tray, &icons, snapshot);
             }
         }) {
-            eprintln!("salmon-watch-2: failed to publish UI state: {error}");
+            log::error!("failed to publish UI state: {error}");
         }
     });
     let persist_store = store.clone();
@@ -90,6 +96,70 @@ fn run(start_hidden: bool, config_path: PathBuf) -> Result<()> {
     Ok(())
 }
 
+fn install_scale_logging(window: &MainWindow, automatic: bool) {
+    let window_weak = window.as_weak();
+    if let Err(error) = slint::spawn_local(async move {
+        let Some(window) = window_weak.upgrade() else {
+            log::error!("could not detect UI scale: Slint window was destroyed");
+            return;
+        };
+        let slint_window = window.window();
+        let native_window = match slint_window.winit_window().await {
+            Ok(window) => window,
+            Err(error) => {
+                log::error!("could not detect UI scale: {error}");
+                return;
+            }
+        };
+        let window_weak = window.as_weak();
+        Timer::single_shot(std::time::Duration::from_millis(100), move || {
+            let Some(window) = window_weak.upgrade() else {
+                log::error!("could not detect UI scale: Slint window was destroyed");
+                return;
+            };
+            let Some(monitor) = native_window.current_monitor() else {
+                log::error!(
+                    "could not detect monitor scale; Slint scale={}, winit window scale={}",
+                    window.window().scale_factor(),
+                    native_window.scale_factor()
+                );
+                return;
+            };
+            let monitor_size = monitor.size();
+            if monitor_size.width <= 1 || monitor_size.height <= 1 {
+                log::error!(
+                    "could not detect monitor scale: winit returned its dummy monitor; Slint and winit are using fallback scale {}",
+                    window.window().scale_factor()
+                );
+                return;
+            }
+            if automatic {
+                log::debug!(
+                    "auto-detected UI scale: Slint={}, winit window={}, monitor={} ({:?}, {}x{})",
+                    window.window().scale_factor(),
+                    native_window.scale_factor(),
+                    monitor.scale_factor(),
+                    monitor.name(),
+                    monitor_size.width,
+                    monitor_size.height
+                );
+            } else {
+                log::debug!(
+                    "configured UI scale: Slint={}; native winit window={}, monitor={} ({:?}, {}x{})",
+                    window.window().scale_factor(),
+                    native_window.scale_factor(),
+                    monitor.scale_factor(),
+                    monitor.name(),
+                    monitor_size.width,
+                    monitor_size.height
+                );
+            }
+        });
+    }) {
+        log::error!("could not schedule UI scale detection: {error}");
+    }
+}
+
 fn apply_preferences(window: &MainWindow, state: &StateFile) {
     window.set_dark_theme(state.preferences.theme == Theme::Dark);
     window.set_servers_expanded(state.preferences.sections.servers_expanded);
@@ -105,7 +175,7 @@ fn install_window_callbacks(window: &MainWindow, store: Store, geometry: WindowG
         if let Some(window) = window_weak.upgrade()
             && let Err(error) = geometry.hide(window.window())
         {
-            eprintln!("salmon-watch-2: failed to hide window: {error:#}");
+            log::error!("failed to hide window: {error:#}");
         }
         CloseRequestResponse::KeepWindowShown
     });
@@ -130,7 +200,7 @@ fn install_window_callbacks(window: &MainWindow, store: Store, geometry: WindowG
         }) {
             Ok(()) => {}
             Err(error) => {
-                eprintln!("salmon-watch-2: failed to save preferences: {error:#}");
+                log::error!("failed to save preferences: {error:#}");
             }
         }
     });
@@ -152,12 +222,12 @@ fn install_tray_callbacks(
             ) {
                 TrayToggleAction::Hide => {
                     if let Err(error) = geometry_for_toggle.hide(window.window()) {
-                        eprintln!("salmon-watch-2: failed to hide window: {error:#}");
+                        log::error!("failed to hide window: {error:#}");
                     }
                 }
                 TrayToggleAction::Show => {
                     if let Err(error) = geometry_for_toggle.show(window.window()) {
-                        eprintln!("salmon-watch-2: failed to show window: {error:#}");
+                        log::error!("failed to show window: {error:#}");
                         return;
                     }
                     activate_window(window.window());
@@ -174,7 +244,7 @@ fn install_tray_callbacks(
             return;
         };
         if let Err(error) = geometry_for_open.show(window.window()) {
-            eprintln!("salmon-watch-2: failed to show window: {error:#}");
+            log::error!("failed to show window: {error:#}");
             return;
         }
         activate_window(window.window());
@@ -185,7 +255,7 @@ fn install_tray_callbacks(
             "Example notification",
             "Salmon Watch desktop notifications are working.",
         ) {
-            eprintln!("salmon-watch-2: failed to show example notification: {error:#}");
+            log::error!("failed to show example notification: {error:#}");
         }
     });
 
@@ -195,7 +265,7 @@ fn install_tray_callbacks(
             && window.window().is_visible()
             && let Err(error) = geometry.save(window.window())
         {
-            eprintln!("salmon-watch-2: failed to save window geometry: {error:#}");
+            log::error!("failed to save window geometry: {error:#}");
         }
         let _ = slint::quit_event_loop();
     });
@@ -234,7 +304,7 @@ fn install_ctrl_c_handler(tray: &SalmonTray) -> Result<()> {
     ctrlc::set_handler(move || {
         let tray_weak = tray_weak.clone();
         if let Err(error) = tray_weak.upgrade_in_event_loop(|tray| tray.invoke_exit()) {
-            eprintln!("salmon-watch-2: failed to request shutdown after Ctrl+C: {error}");
+            log::error!("failed to request shutdown after Ctrl+C: {error}");
         }
     })
     .context("failed to install Ctrl+C handler")
@@ -281,7 +351,7 @@ fn install_incident_actions(window: &MainWindow, commands: tokio::sync::mpsc::Se
         if let Some(command) = command
             && let Err(error) = commands.try_send(command)
         {
-            eprintln!("salmon-watch-2: failed to queue incident action: {error}");
+            log::error!("failed to queue incident action: {error}");
         }
     });
 }

@@ -78,7 +78,7 @@ fn run(
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("salmon-watch-2: failed to create async runtime: {error}");
+            log::error!("failed to create async runtime: {error}");
             return;
         }
     };
@@ -127,7 +127,7 @@ async fn run_async(
                 Effect::Notify { title, body } => {
                     tokio::task::spawn_blocking(move || {
                         if let Err(error) = DesktopNotificationSink.push(&title, &body) {
-                            eprintln!("salmon-watch-2: {error:#}");
+                            log::error!("{error:#}");
                         }
                     });
                 }
@@ -137,10 +137,10 @@ async fn run_async(
                     match tokio::task::spawn_blocking(move || persist(&snoozes)).await {
                         Ok(Ok(())) => {}
                         Ok(Err(error)) => {
-                            eprintln!("salmon-watch-2: failed to persist snoozes: {error:#}")
+                            log::error!("failed to persist snoozes: {error:#}")
                         }
                         Err(error) => {
-                            eprintln!("salmon-watch-2: snooze persistence worker failed: {error}")
+                            log::error!("snooze persistence worker failed: {error}")
                         }
                     }
                 }

@@ -3,10 +3,13 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
+use crate::logging::LogLevel;
+
 #[derive(Debug, Default, PartialEq)]
 pub struct Options {
     pub start_hidden: bool,
     pub scale: Option<f32>,
+    pub log_level: Option<LogLevel>,
     pub config: Option<PathBuf>,
     pub help: bool,
 }
@@ -32,12 +35,26 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options> {
             Some(arg) if arg.starts_with("--scale=") => {
                 options.scale = Some(parse_scale(OsString::from(&arg[8..]).as_ref())?);
             }
+            Some("--log-level") => {
+                let value = args.next().context("--log-level requires a level")?;
+                options.log_level = Some(parse_log_level(&value)?);
+            }
+            Some(arg) if arg.starts_with("--log-level=") => {
+                options.log_level = Some(parse_log_level(OsString::from(&arg[12..]).as_ref())?);
+            }
             Some("-h" | "--help") => options.help = true,
             Some(arg) => anyhow::bail!("unknown argument {arg:?}"),
             None => anyhow::bail!("arguments must be valid UTF-8"),
         }
     }
     Ok(options)
+}
+
+fn parse_log_level(value: &std::ffi::OsStr) -> Result<LogLevel> {
+    value
+        .to_str()
+        .context("--log-level must be valid UTF-8")?
+        .parse()
 }
 
 fn parse_scale(value: &std::ffi::OsStr) -> Result<f32> {
@@ -67,11 +84,13 @@ mod tests {
             "--config=config.yml".into(),
             "--start-hidden".into(),
             "--scale=1.25".into(),
+            "--log-level=debug".into(),
         ])
         .unwrap();
         assert_eq!(options.config, Some(PathBuf::from("config.yml")));
         assert!(options.start_hidden);
         assert_eq!(options.scale, Some(1.25));
+        assert_eq!(options.log_level, Some(LogLevel::Debug));
     }
 
     #[test]
@@ -81,6 +100,8 @@ mod tests {
         }
         assert!(parse(["--scale".into()]).is_err());
         assert!(parse(["--config".into()]).is_err());
+        assert!(parse(["--log-level".into()]).is_err());
+        assert!(parse(["--log-level=verbose".into()]).is_err());
         assert!(parse(["--wat".into()]).is_err());
     }
 }

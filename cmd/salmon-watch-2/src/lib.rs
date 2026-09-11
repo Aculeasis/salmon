@@ -2,6 +2,7 @@ pub mod app;
 pub mod cli;
 pub mod config;
 pub mod domain;
+pub mod logging;
 pub mod network;
 pub mod notification;
 pub mod persistence;

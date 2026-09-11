@@ -4334,6 +4334,7 @@ dependencies = [
  "dirs",
  "futures-util",
  "image",
+ "log",
  "notify-rust",
  "serde",
  "serde_json",
