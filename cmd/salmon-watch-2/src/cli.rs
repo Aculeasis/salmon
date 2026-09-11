@@ -19,10 +19,23 @@ pub struct Options {
 pub enum Command {
     #[default]
     Run,
+    Setup {
+        operation: SetupOperation,
+        reinstall: bool,
+    },
     GenerateBearerToken {
         server_id: String,
         output: Option<PathBuf>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SetupOperation {
+    #[default]
+    Complete,
+    CreateConfig,
+    InstallAutostart,
+    InstallLauncher,
 }
 
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options> {
@@ -57,12 +70,55 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options> {
                 options.command = parse_generate_bearer_token(&mut args, &mut options.config)?;
                 break;
             }
+            Some("setup") => {
+                options.command = parse_setup(&mut args, &mut options.config, &mut options.help)?;
+                break;
+            }
             Some("-h" | "--help") => options.help = true,
             Some(arg) => anyhow::bail!("unknown argument {arg:?}"),
             None => anyhow::bail!("arguments must be valid UTF-8"),
         }
     }
     Ok(options)
+}
+
+fn parse_setup(
+    args: &mut impl Iterator<Item = OsString>,
+    config: &mut Option<PathBuf>,
+    help: &mut bool,
+) -> Result<Command> {
+    let mut operation = SetupOperation::Complete;
+    let mut operation_seen = false;
+    let mut reinstall = false;
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--reinstall") => reinstall = true,
+            Some("-h" | "--help") => *help = true,
+            Some("--config") => {
+                *config = Some(PathBuf::from(
+                    args.next().context("--config requires a filename")?,
+                ));
+            }
+            Some(value) if value.starts_with("--config=") => {
+                *config = Some(PathBuf::from(&value[9..]));
+            }
+            Some("create-config" | "install-autostart" | "install-launcher") if !operation_seen => {
+                operation = match arg.to_str().expect("matched UTF-8 setup operation") {
+                    "create-config" => SetupOperation::CreateConfig,
+                    "install-autostart" => SetupOperation::InstallAutostart,
+                    "install-launcher" => SetupOperation::InstallLauncher,
+                    _ => unreachable!(),
+                };
+                operation_seen = true;
+            }
+            Some(value) => anyhow::bail!("unexpected setup argument {value:?}"),
+            None => anyhow::bail!("arguments must be valid UTF-8"),
+        }
+    }
+    Ok(Command::Setup {
+        operation,
+        reinstall,
+    })
 }
 
 fn parse_generate_bearer_token(
@@ -175,9 +231,62 @@ mod tests {
                 output: Some(PathBuf::from("secret.token")),
             }
         );
+        assert!(parse(["setup".into(), "--help".into()]).unwrap().help);
 
         assert!(parse(["generate-bearer-token".into()]).is_err());
         assert!(parse(["generate-bearer-token".into(), "one".into(), "two".into()]).is_err());
         assert!(parse(["generate-bearer-token".into(), "--output".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_setup_commands_and_reinstall_in_any_position() {
+        assert_eq!(
+            parse(["setup".into()]).unwrap().command,
+            Command::Setup {
+                operation: SetupOperation::Complete,
+                reinstall: false,
+            }
+        );
+        let options = parse([
+            "setup".into(),
+            "--reinstall".into(),
+            "install-autostart".into(),
+            "--config=custom.yml".into(),
+        ])
+        .unwrap();
+        assert_eq!(options.config, Some(PathBuf::from("custom.yml")));
+        assert_eq!(
+            options.command,
+            Command::Setup {
+                operation: SetupOperation::InstallAutostart,
+                reinstall: true,
+            }
+        );
+        assert_eq!(
+            parse([
+                "setup".into(),
+                "install-launcher".into(),
+                "--reinstall".into(),
+            ])
+            .unwrap()
+            .command,
+            Command::Setup {
+                operation: SetupOperation::InstallLauncher,
+                reinstall: true,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_or_multiple_setup_operations() {
+        assert!(parse(["setup".into(), "unexpected".into()]).is_err());
+        assert!(
+            parse([
+                "setup".into(),
+                "create-config".into(),
+                "install-launcher".into(),
+            ])
+            .is_err()
+        );
     }
 }

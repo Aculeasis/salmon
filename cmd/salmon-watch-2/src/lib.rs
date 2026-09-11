@@ -8,6 +8,7 @@ pub mod network;
 pub mod notification;
 pub mod persistence;
 pub mod runtime;
+pub mod setup;
 pub mod tray;
 pub mod ui;
 pub mod window_geometry;

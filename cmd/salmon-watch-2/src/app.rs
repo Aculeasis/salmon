@@ -20,7 +20,7 @@ pub fn execute() -> Result<()> {
     let options = cli::parse(std::env::args_os().skip(1))?;
     if options.help {
         println!(
-            "Usage:\n  salmon-watch-2 [OPTIONS]\n  salmon-watch-2 [--config FILE] generate-bearer-token [--output FILE] SERVER_ID\n\nOptions:\n  --config FILE      Configuration file\n  --start-hidden     Start with the status window hidden\n  --scale FACTOR     Set the UI scale factor (must be greater than zero)\n  --log-level LEVEL  Set logging verbosity: trace, debug, info, warn, or error (default: info)\n  -h, --help         Print help"
+            "Usage:\n  salmon-watch-2 [OPTIONS]\n  salmon-watch-2 [--config FILE] setup [--reinstall] [create-config|install-autostart|install-launcher]\n  salmon-watch-2 [--config FILE] generate-bearer-token [--output FILE] SERVER_ID\n\nOptions:\n  --config FILE      Configuration file\n  --start-hidden     Start with the status window hidden\n  --scale FACTOR     Set the UI scale factor (must be greater than zero)\n  --log-level LEVEL  Set logging verbosity: trace, debug, info, warn, or error (default: info)\n  --reinstall        With setup, privately back up and replace desktop integration files\n  -h, --help         Print help"
         );
         return Ok(());
     }
@@ -34,6 +34,17 @@ pub fn execute() -> Result<()> {
             server_id,
             output.as_deref(),
         )?;
+        return Ok(());
+    }
+    if let CliCommand::Setup {
+        operation,
+        reinstall,
+    } = options.command
+    {
+        let config_path = options.config.clone().unwrap_or(config::default_path()?);
+        let stdout = std::io::stdout();
+        let mut output_stream = stdout.lock();
+        crate::setup::execute(&mut output_stream, &config_path, operation, reinstall)?;
         return Ok(());
     }
     logging::init(options.log_level.unwrap_or(LogLevel::Info))?;
