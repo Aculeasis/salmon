@@ -24,7 +24,26 @@ pub struct ServerConfig {
     pub id: String,
     pub addr: String,
     #[serde(default)]
+    pub tls: Option<TlsConfig>,
+    #[serde(default)]
+    pub auth: Option<AuthConfig>,
+    #[serde(default)]
     pub tunnel: Option<TunnelConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TlsConfig {
+    #[serde(default)]
+    pub ca_file: String,
+    #[serde(default)]
+    pub server_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AuthConfig {
+    pub bearer_token_file: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -58,20 +77,8 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         let mut ids = HashSet::new();
         for (index, server) in self.ws_client.servers.iter().enumerate() {
-            if server.id.is_empty()
-                || !server
-                    .id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-            {
-                bail!(
-                    "wsClient.servers[{index}].id {:?} must contain only letters, digits, underscores, or hyphens",
-                    server.id
-                );
-            }
-            if server.id == "internal" {
-                bail!("wsClient.servers[{index}].id \"internal\" is reserved");
-            }
+            validate_server_id(&server.id)
+                .with_context(|| format!("wsClient.servers[{index}].id"))?;
             if !ids.insert(&server.id) {
                 bail!("wsClient.servers[{index}].id {:?} is duplicated", server.id);
             }
@@ -81,12 +88,37 @@ impl Config {
             if server.addr.contains("//") || server.addr.contains('/') {
                 bail!("wsClient.servers[{index}].addr must be a host:port address, not a URL");
             }
+            validate_host_port(&server.addr)
+                .with_context(|| format!("wsClient.servers[{index}].addr"))?;
+            if server
+                .auth
+                .as_ref()
+                .is_some_and(|auth| auth.bearer_token_file.is_empty())
+            {
+                bail!("wsClient.servers[{index}].auth.bearerTokenFile is required");
+            }
             if let Some(tunnel) = &server.tunnel {
                 validate_ssh_tunnel(server, &tunnel.ssh, index)?;
             }
         }
         Ok(())
     }
+}
+
+pub fn validate_server_id(id: &str) -> Result<()> {
+    if id.is_empty() {
+        bail!("is required");
+    }
+    if !id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        bail!("{id:?} must contain only letters, digits, underscores, or hyphens");
+    }
+    if id == "internal" {
+        bail!("{id:?} is reserved");
+    }
+    Ok(())
 }
 
 fn validate_ssh_tunnel(server: &ServerConfig, ssh: &SshTunnelConfig, index: usize) -> Result<()> {
@@ -165,6 +197,30 @@ mod tests {
             parse("wsClient:\n  servers:\n    - id: local\n      addr: localhost:41990\n").unwrap();
         assert_eq!(config.ws_client.servers[0].id, "local");
         assert!(config.ws_client.servers[0].tunnel.is_none());
+        assert!(config.ws_client.servers[0].tls.is_none());
+        assert!(config.ws_client.servers[0].auth.is_none());
+    }
+
+    #[test]
+    fn accepts_tls_and_bearer_auth() {
+        let config = parse(
+            "wsClient:\n  servers:\n    - id: remote\n      addr: 127.0.0.1:41990\n      tls:\n        caFile: /etc/salmon/ca.pem\n        serverName: salmon.example.com\n      auth:\n        bearerTokenFile: /etc/salmon/remote.token\n",
+        )
+        .unwrap();
+        let server = &config.ws_client.servers[0];
+        let tls = server.tls.as_ref().unwrap();
+        assert_eq!(tls.ca_file, "/etc/salmon/ca.pem");
+        assert_eq!(tls.server_name, "salmon.example.com");
+        assert_eq!(
+            server.auth.as_ref().unwrap().bearer_token_file,
+            "/etc/salmon/remote.token"
+        );
+
+        let empty_tls = parse(
+            "wsClient:\n  servers:\n    - id: remote\n      addr: salmon.example.com:41990\n      tls: {}\n",
+        )
+        .unwrap();
+        assert!(empty_tls.ws_client.servers[0].tls.is_some());
     }
 
     #[test]
@@ -182,17 +238,22 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_security_and_tunnel_options() {
-        for extra in [
-            "tls: {}",
-            "auth: {}",
-            "tunnel: {}",
-            "tunnel: { customCommand: {} }",
-        ] {
+    fn rejects_unsupported_tunnel_options() {
+        for extra in ["tunnel: {}", "tunnel: { customCommand: {} }"] {
             let yaml = format!(
                 "wsClient:\n  servers:\n    - id: local\n      addr: localhost:41990\n      {extra}\n"
             );
             assert!(parse(&yaml).is_err(), "accepted {extra}");
+        }
+    }
+
+    #[test]
+    fn rejects_missing_bearer_token_file() {
+        for auth in ["{}", "{ bearerTokenFile: '' }"] {
+            let yaml = format!(
+                "wsClient:\n  servers:\n    - id: remote\n      addr: localhost:41990\n      auth: {auth}\n"
+            );
+            assert!(parse(&yaml).is_err(), "accepted invalid auth: {auth}");
         }
     }
 

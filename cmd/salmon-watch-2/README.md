@@ -14,9 +14,6 @@ wsClient:
       addr: localhost:41990
 ```
 
-TLS, bearer authentication, and tunnels are rejected until their implementations
-are added; they are never silently ignored.
-
 ## Testing
 
 Run the regular test suite with:

@@ -11,7 +11,18 @@ pub struct Options {
     pub scale: Option<f32>,
     pub log_level: Option<LogLevel>,
     pub config: Option<PathBuf>,
+    pub command: Command,
     pub help: bool,
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub enum Command {
+    #[default]
+    Run,
+    GenerateBearerToken {
+        server_id: String,
+        output: Option<PathBuf>,
+    },
 }
 
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options> {
@@ -42,12 +53,53 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options> {
             Some(arg) if arg.starts_with("--log-level=") => {
                 options.log_level = Some(parse_log_level(OsString::from(&arg[12..]).as_ref())?);
             }
+            Some("generate-bearer-token") => {
+                options.command = parse_generate_bearer_token(&mut args, &mut options.config)?;
+                break;
+            }
             Some("-h" | "--help") => options.help = true,
             Some(arg) => anyhow::bail!("unknown argument {arg:?}"),
             None => anyhow::bail!("arguments must be valid UTF-8"),
         }
     }
     Ok(options)
+}
+
+fn parse_generate_bearer_token(
+    args: &mut impl Iterator<Item = OsString>,
+    config: &mut Option<PathBuf>,
+) -> Result<Command> {
+    let mut server_id = None;
+    let mut output = None;
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--output") => {
+                output = Some(PathBuf::from(
+                    args.next().context("--output requires a filename")?,
+                ));
+            }
+            Some(value) if value.starts_with("--output=") => {
+                output = Some(PathBuf::from(&value[9..]));
+            }
+            Some("--config") => {
+                *config = Some(PathBuf::from(
+                    args.next().context("--config requires a filename")?,
+                ));
+            }
+            Some(value) if value.starts_with("--config=") => {
+                *config = Some(PathBuf::from(&value[9..]));
+            }
+            Some(value) if !value.starts_with('-') && server_id.is_none() => {
+                server_id = Some(value.to_owned());
+            }
+            Some(value) => anyhow::bail!("unexpected generate-bearer-token argument {value:?}"),
+            None => anyhow::bail!("arguments must be valid UTF-8"),
+        }
+    }
+    Ok(Command::GenerateBearerToken {
+        server_id: server_id.context("generate-bearer-token requires SERVER_ID")?,
+        output,
+    })
 }
 
 fn parse_log_level(value: &std::ffi::OsStr) -> Result<LogLevel> {
@@ -103,5 +155,29 @@ mod tests {
         assert!(parse(["--log-level".into()]).is_err());
         assert!(parse(["--log-level=verbose".into()]).is_err());
         assert!(parse(["--wat".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_generate_bearer_token_command() {
+        let options = parse([
+            "--config".into(),
+            "relative.yml".into(),
+            "generate-bearer-token".into(),
+            "--output=secret.token".into(),
+            "remote".into(),
+        ])
+        .unwrap();
+        assert_eq!(options.config, Some(PathBuf::from("relative.yml")));
+        assert_eq!(
+            options.command,
+            Command::GenerateBearerToken {
+                server_id: "remote".into(),
+                output: Some(PathBuf::from("secret.token")),
+            }
+        );
+
+        assert!(parse(["generate-bearer-token".into()]).is_err());
+        assert!(parse(["generate-bearer-token".into(), "one".into(), "two".into()]).is_err());
+        assert!(parse(["generate-bearer-token".into(), "--output".into()]).is_err());
     }
 }

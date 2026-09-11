@@ -1,14 +1,26 @@
+use std::fs;
+use std::io::BufReader;
+use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
+use rustls::{ClientConfig, RootCertStore};
+use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::{
-    connect_async_with_config,
-    tungstenite::{Message, protocol::WebSocketConfig},
+    Connector, client_async_tls_with_config,
+    tungstenite::{
+        Error as WebSocketError, Message,
+        client::IntoClientRequest,
+        handshake::client::Request,
+        http::{HeaderValue, header},
+        protocol::WebSocketConfig,
+    },
 };
 
-use crate::config::ServerConfig;
+use crate::config::{AuthConfig, ServerConfig, TlsConfig};
 use crate::domain::Event;
 
 const MAX_MESSAGE_BYTES: usize = 1 << 20;
@@ -22,6 +34,56 @@ struct ClientOptions {
     read_timeout: Duration,
     reconnect_step: Duration,
     max_reconnect_delay: Duration,
+}
+
+#[derive(Clone)]
+struct ConnectionSetup {
+    scheme: &'static str,
+    connector: Connector,
+    bearer: Option<HeaderValue>,
+    tls_server_name: Option<String>,
+}
+
+impl ConnectionSetup {
+    fn for_server(server: &ServerConfig) -> Result<Self> {
+        Ok(Self {
+            scheme: if server.tls.is_some() { "wss" } else { "ws" },
+            connector: match &server.tls {
+                Some(tls) => Connector::Rustls(build_tls_config(tls)?),
+                None => Connector::Plain,
+            },
+            bearer: server.auth.as_ref().map(load_bearer_token).transpose()?,
+            tls_server_name: server
+                .tls
+                .as_ref()
+                .and_then(|tls| (!tls.server_name.is_empty()).then(|| tls.server_name.clone())),
+        })
+    }
+
+    fn request(&self, server: &ServerConfig) -> Result<Request> {
+        let authority = match &self.tls_server_name {
+            Some(server_name) => {
+                let (_, port) = split_host_port(&server.addr)?;
+                format!("{}:{port}", uri_host(server_name))
+            }
+            None => server.addr.clone(),
+        };
+        let url = format!("{}://{authority}/api/v1/wsconnect", self.scheme);
+        let mut request = url
+            .as_str()
+            .into_client_request()
+            .with_context(|| format!("build WebSocket request for {url}"))?;
+        request.headers_mut().insert(
+            header::HOST,
+            HeaderValue::from_str(&server.addr).context("invalid WebSocket Host header")?,
+        );
+        if let Some(bearer) = &self.bearer {
+            request
+                .headers_mut()
+                .insert(header::AUTHORIZATION, bearer.clone());
+        }
+        Ok(request)
+    }
 }
 
 impl Default for ClientOptions {
@@ -64,6 +126,21 @@ async fn run_connection_loop_with_options(
     tunneled: bool,
     options: ClientOptions,
 ) {
+    let setup = match ConnectionSetup::for_server(&server) {
+        Ok(setup) => setup,
+        Err(error) => {
+            let error = format!("preparing connection: {error:#}");
+            log::error!("server {} {error}", server.id);
+            let _ = events
+                .send(Event::Disconnected {
+                    server_id: server.id,
+                    at: unix_now(),
+                    error,
+                })
+                .await;
+            return;
+        }
+    };
     let mut reconnect_delay = Duration::ZERO;
     loop {
         if !reconnect_delay.is_zero() {
@@ -72,16 +149,23 @@ async fn run_connection_loop_with_options(
                 _ = shutdown.changed() => return,
             }
         }
-        let url = format!("ws://{}/api/v1/wsconnect", server.addr);
+        let request = match setup.request(&server) {
+            Ok(request) => request,
+            Err(error) => {
+                let error = format!("preparing connection: {error:#}");
+                log::error!("server {} {error}", server.id);
+                let _ = events
+                    .send(Event::Disconnected {
+                        server_id: server.id.clone(),
+                        at: unix_now(),
+                        error,
+                    })
+                    .await;
+                return;
+            }
+        };
         let connected = tokio::select! {
-            result = connect_async_with_config(
-                &url,
-                Some(WebSocketConfig::default()
-                    .read_buffer_size(4 * 1024)
-                    .max_message_size(Some(options.max_message_bytes))
-                    .max_frame_size(Some(options.max_message_bytes))),
-                false,
-            ) => result,
+            result = connect(&server, &setup, request, options) => result,
             _ = shutdown.changed() => return,
         };
         let mut socket = match connected {
@@ -90,12 +174,13 @@ async fn run_connection_loop_with_options(
                 if tunneled && tunnel_stopped(&mut shutdown).await {
                     return;
                 }
+                let error = websocket_connection_error(&error, setup.bearer.is_some());
                 log::warn!("server {} connection failed: {error}", server.id);
                 let _ = events
                     .send(Event::Disconnected {
                         server_id: server.id.clone(),
                         at: unix_now(),
-                        error: error.to_string(),
+                        error,
                     })
                     .await;
                 reconnect_delay =
@@ -209,6 +294,130 @@ async fn run_connection_loop_with_options(
     }
 }
 
+async fn connect(
+    server: &ServerConfig,
+    setup: &ConnectionSetup,
+    request: Request,
+    options: ClientOptions,
+) -> std::result::Result<
+    (
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    WebSocketError,
+> {
+    let stream = TcpStream::connect(&server.addr)
+        .await
+        .map_err(WebSocketError::Io)?;
+    client_async_tls_with_config(
+        request,
+        stream,
+        Some(
+            WebSocketConfig::default()
+                .read_buffer_size(4 * 1024)
+                .max_message_size(Some(options.max_message_bytes))
+                .max_frame_size(Some(options.max_message_bytes)),
+        ),
+        Some(setup.connector.clone()),
+    )
+    .await
+}
+
+fn load_bearer_token(auth: &AuthConfig) -> Result<HeaderValue> {
+    let contents = fs::read_to_string(&auth.bearer_token_file)
+        .with_context(|| format!("read bearer token file {:?}", auth.bearer_token_file))?;
+    let token = contents.trim();
+    if token.is_empty() {
+        bail!("bearer token file {:?} is empty", auth.bearer_token_file);
+    }
+    if token
+        .chars()
+        .any(|character| character.is_ascii_whitespace())
+    {
+        bail!(
+            "bearer token file {:?} contains whitespace inside the token",
+            auth.bearer_token_file
+        );
+    }
+    HeaderValue::from_str(&format!("Bearer {token}")).with_context(|| {
+        format!(
+            "bearer token file {:?} is not a valid HTTP token",
+            auth.bearer_token_file
+        )
+    })
+}
+
+fn build_tls_config(tls: &TlsConfig) -> Result<Arc<ClientConfig>> {
+    let native = rustls_native_certs::load_native_certs();
+    for error in &native.errors {
+        log::warn!("failed to load one native root CA certificate: {error}");
+    }
+    let mut roots = RootCertStore::empty();
+    roots.add_parsable_certificates(native.certs);
+
+    if !tls.ca_file.is_empty() {
+        let file = fs::File::open(&tls.ca_file)
+            .with_context(|| format!("read TLS CA file {:?}", tls.ca_file))?;
+        let certificates = rustls_pemfile::certs(&mut BufReader::new(file))
+            .collect::<std::io::Result<Vec<_>>>()
+            .with_context(|| format!("read TLS CA file {:?}", tls.ca_file))?;
+        let (added, _) = roots.add_parsable_certificates(certificates);
+        if added == 0 {
+            bail!(
+                "TLS CA file {:?} contains no valid certificates",
+                tls.ca_file
+            );
+        }
+    }
+    if roots.is_empty() {
+        bail!("load system CA certificates: no trusted certificates were found");
+    }
+
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+        .context("configure TLS 1.2 and TLS 1.3")?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(Arc::new(config))
+}
+
+fn split_host_port(address: &str) -> Result<(&str, u16)> {
+    let (host, port) = if let Some(rest) = address.strip_prefix('[') {
+        rest.split_once("]:").context("address must be host:port")?
+    } else {
+        address
+            .rsplit_once(':')
+            .context("address must be host:port")?
+    };
+    let port = port.parse().context("address port is invalid")?;
+    Ok((host, port))
+}
+
+fn uri_host(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    }
+}
+
+fn websocket_connection_error(error: &WebSocketError, bearer_provided: bool) -> String {
+    if let WebSocketError::Http(response) = error {
+        if response.status() == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED {
+            return if bearer_provided {
+                "server rejected the configured bearer token".into()
+            } else {
+                "server requires authentication, but no bearer token is configured".into()
+            };
+        }
+        return format!("WebSocket handshake failed: {}", response.status());
+    }
+    error.to_string()
+}
+
 async fn tunnel_stopped(shutdown: &mut watch::Receiver<bool>) -> bool {
     tokio::select! {
         _ = sleep(Duration::from_millis(50)) => *shutdown.borrow(),
@@ -225,6 +434,8 @@ fn unix_now() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
     use futures_util::SinkExt;
     use tokio::net::TcpListener;
     use tokio::time::timeout;
@@ -236,6 +447,8 @@ mod tests {
         ServerConfig {
             id: "test".into(),
             addr: address,
+            tls: None,
+            auth: None,
             tunnel: None,
         }
     }
@@ -247,6 +460,110 @@ mod tests {
             reconnect_step: Duration::from_millis(10),
             max_reconnect_delay: Duration::from_millis(20),
         }
+    }
+
+    #[test]
+    fn bearer_token_is_trimmed_and_added_to_the_request() {
+        let mut token_file = tempfile::NamedTempFile::new().unwrap();
+        write!(token_file, " \nvalid-token\r\n").unwrap();
+        let server = ServerConfig {
+            auth: Some(AuthConfig {
+                bearer_token_file: token_file.path().to_string_lossy().into_owned(),
+            }),
+            ..server("127.0.0.1:41990".into())
+        };
+        let setup = ConnectionSetup::for_server(&server).unwrap();
+        let request = setup.request(&server).unwrap();
+        assert_eq!(request.uri(), "ws://127.0.0.1:41990/api/v1/wsconnect");
+        assert_eq!(request.headers()[header::HOST], "127.0.0.1:41990");
+        assert_eq!(
+            request.headers()[header::AUTHORIZATION],
+            "Bearer valid-token"
+        );
+    }
+
+    #[test]
+    fn bearer_token_rejects_missing_empty_and_internal_whitespace() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = AuthConfig {
+            bearer_token_file: directory
+                .path()
+                .join("missing")
+                .to_string_lossy()
+                .into_owned(),
+        };
+        assert!(
+            load_bearer_token(&missing)
+                .unwrap_err()
+                .to_string()
+                .contains("read bearer token file")
+        );
+
+        for (name, contents, expected) in [
+            ("empty", " \n\t", "is empty"),
+            ("space", "two tokens", "contains whitespace inside"),
+            ("newline", "two\ntokens", "contains whitespace inside"),
+        ] {
+            let filename = directory.path().join(name);
+            fs::write(&filename, contents).unwrap();
+            let error = load_bearer_token(&AuthConfig {
+                bearer_token_file: filename.to_string_lossy().into_owned(),
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error:#}");
+        }
+    }
+
+    #[test]
+    fn tls_server_name_controls_verification_uri_not_http_host() {
+        let setup = ConnectionSetup {
+            scheme: "wss",
+            connector: Connector::Plain,
+            bearer: None,
+            tls_server_name: Some("salmon.test".into()),
+        };
+        let server = server("127.0.0.1:41990".into());
+        let request = setup.request(&server).unwrap();
+        assert_eq!(request.uri(), "wss://salmon.test:41990/api/v1/wsconnect");
+        assert_eq!(request.headers()[header::HOST], "127.0.0.1:41990");
+    }
+
+    #[test]
+    fn formats_authentication_handshake_errors_usefully() {
+        let unauthorized = WebSocketError::Http(Box::new(
+            tokio_tungstenite::tungstenite::http::Response::builder()
+                .status(401)
+                .body(None)
+                .unwrap(),
+        ));
+        assert_eq!(
+            websocket_connection_error(&unauthorized, false),
+            "server requires authentication, but no bearer token is configured"
+        );
+        assert_eq!(
+            websocket_connection_error(&unauthorized, true),
+            "server rejected the configured bearer token"
+        );
+
+        let forbidden = WebSocketError::Http(Box::new(
+            tokio_tungstenite::tungstenite::http::Response::builder()
+                .status(403)
+                .body(None)
+                .unwrap(),
+        ));
+        assert_eq!(
+            websocket_connection_error(&forbidden, true),
+            "WebSocket handshake failed: 403 Forbidden"
+        );
+    }
+
+    #[test]
+    fn parses_ipv4_hostname_and_ipv6_addresses() {
+        assert_eq!(split_host_port("host:41990").unwrap(), ("host", 41990));
+        assert_eq!(split_host_port("127.0.0.1:1").unwrap(), ("127.0.0.1", 1));
+        assert_eq!(split_host_port("[::1]:443").unwrap(), ("::1", 443));
+        assert!(split_host_port("host").is_err());
+        assert!(split_host_port("host:nope").is_err());
     }
 
     async fn next(events: &mut mpsc::Receiver<Event>) -> Event {

@@ -1,4 +1,5 @@
 pub mod app;
+pub mod bearer_token;
 pub mod cli;
 pub mod config;
 pub mod domain;

@@ -3,6 +3,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::cli;
+use crate::cli::Command as CliCommand;
 use crate::config::{self, Config};
 use crate::logging::{self, LogLevel};
 use crate::notification::{DesktopNotificationSink, NotificationSink};
@@ -19,8 +20,20 @@ pub fn execute() -> Result<()> {
     let options = cli::parse(std::env::args_os().skip(1))?;
     if options.help {
         println!(
-            "Usage: salmon-watch-2 [--config FILE] [--start-hidden] [--scale FACTOR] [--log-level LEVEL]\n\nOptions:\n  --config FILE      Configuration file\n  --start-hidden     Start with the status window hidden\n  --scale FACTOR     Set the UI scale factor (must be greater than zero)\n  --log-level LEVEL  Set logging verbosity: trace, debug, info, warn, or error (default: info)\n  -h, --help         Print help"
+            "Usage:\n  salmon-watch-2 [OPTIONS]\n  salmon-watch-2 [--config FILE] generate-bearer-token [--output FILE] SERVER_ID\n\nOptions:\n  --config FILE      Configuration file\n  --start-hidden     Start with the status window hidden\n  --scale FACTOR     Set the UI scale factor (must be greater than zero)\n  --log-level LEVEL  Set logging verbosity: trace, debug, info, warn, or error (default: info)\n  -h, --help         Print help"
         );
+        return Ok(());
+    }
+    if let CliCommand::GenerateBearerToken { server_id, output } = &options.command {
+        let config_path = options.config.clone().unwrap_or(config::default_path()?);
+        let stdout = std::io::stdout();
+        let mut output_stream = stdout.lock();
+        crate::bearer_token::generate(
+            &mut output_stream,
+            &config_path,
+            server_id,
+            output.as_deref(),
+        )?;
         return Ok(());
     }
     logging::init(options.log_level.unwrap_or(LogLevel::Info))?;

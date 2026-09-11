@@ -430,6 +430,8 @@ mod tests {
         ServerConfig {
             id: "remote".into(),
             addr,
+            tls: None,
+            auth: None,
             tunnel: None,
         }
     }
@@ -439,6 +441,8 @@ mod tests {
         let server = ServerConfig {
             id: "remote".into(),
             addr: "127.0.0.1:41992".into(),
+            tls: None,
+            auth: None,
             tunnel: Some(TunnelConfig {
                 ssh: SshTunnelConfig {
                     host: "salmon.example.com".into(),
@@ -494,6 +498,8 @@ mod tests {
         let server = ServerConfig {
             id: "remote".into(),
             addr: "localhost:41992".into(),
+            tls: None,
+            auth: None,
             tunnel: Some(TunnelConfig {
                 ssh: SshTunnelConfig {
                     host: "host".into(),
