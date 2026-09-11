@@ -12,6 +12,7 @@ const DEFAULT_CONFIG: &[u8] = include_bytes!("../assets/setup/salmon-watch.yml")
 const APPLICATION_ICON: &[u8] = include_bytes!("../assets/app-icon.svg");
 const DESKTOP_ENTRY_TEMPLATE: &str = include_str!("../assets/setup/salmon-watch.desktop.tpl");
 const DESKTOP_EXEC_PLACEHOLDER: &str = "{{EXEC}}";
+const DESKTOP_ENTRY_VERSION_KEY: &str = "X-Salmon-Watch-Desktop-Entry-Version";
 
 #[derive(Clone, Debug)]
 struct InstallPaths {
@@ -111,6 +112,10 @@ fn execute_with(
     let executable = validate_executable_path(executable, &std::env::temp_dir())?;
     let autostart_entry = desktop_entry(&executable, &config_filename, true)?;
     let launcher_entry = desktop_entry(&executable, &config_filename, false)?;
+    let legacy_installation = !reinstall
+        && operation == SetupOperation::Complete
+        && is_legacy_desktop_entry_file(&paths.autostart)
+        && is_legacy_desktop_entry_file(&paths.launcher);
 
     let backup_targets = if reinstall {
         let mut targets = Vec::new();
@@ -153,6 +158,12 @@ fn execute_with(
             "application launcher",
             &paths.launcher,
             launcher_result,
+        )?;
+    }
+    if legacy_installation {
+        writeln!(
+            output,
+            "\nNOTE: detected desktop integration from the older web-based salmon-watch.\nRun this setup command again with --reinstall to replace the old files. The configuration will not be overwritten."
         )?;
     }
     if operation == SetupOperation::Complete {
@@ -217,6 +228,53 @@ fn render_desktop_entry_template(template: &str, command: &str) -> Result<String
         bail!("desktop entry template contains {{EXEC}} more than once");
     }
     Ok(format!("{before}{command}{after}"))
+}
+
+fn is_legacy_desktop_entry_file(path: &Path) -> bool {
+    fs::read_to_string(path).is_ok_and(|contents| is_legacy_desktop_entry(&contents))
+}
+
+fn is_legacy_desktop_entry(contents: &str) -> bool {
+    let mut in_desktop_entry = false;
+    let mut application = false;
+    let mut name = false;
+    let mut comment = false;
+    let mut icon = false;
+    let mut exec = false;
+
+    for line in contents.lines().map(str::trim) {
+        if line.starts_with('[') && line.ends_with(']') {
+            in_desktop_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_desktop_entry || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        if key == DESKTOP_ENTRY_VERSION_KEY {
+            return false;
+        }
+        match key {
+            "Type" => application = value == "Application",
+            "Name" => name = value == "Salmon Watch",
+            "Comment" => comment = value == "Show Salmon status in the desktop tray",
+            "Icon" => icon = value == "salmon-watch",
+            "Exec" => {
+                exec = value
+                    .split_once(" --config ")
+                    .map(|(executable, _)| executable.trim_matches('"'))
+                    .and_then(|executable| executable.rsplit('/').next())
+                    == Some("salmon-watch");
+            }
+            _ => {}
+        }
+    }
+
+    application && name && comment && icon && exec
 }
 
 fn desktop_exec_argument(argument: &str) -> String {
@@ -497,6 +555,72 @@ mod tests {
         assert!(output.contains("Desktop autostart entry already exists"));
         assert!(output.contains("Application icon already exists"));
         assert!(output.contains("Application launcher already exists"));
+        assert!(!output.contains("older web-based salmon-watch"));
+    }
+
+    #[test]
+    fn detects_legacy_desktop_files_and_prints_one_migration_note() {
+        let layout = TestLayout::new();
+        layout.run(SetupOperation::CreateConfig, false);
+        let version_line = format!("{DESKTOP_ENTRY_VERSION_KEY}=2\n");
+        let legacy_entry = desktop_entry(&layout.executable, &layout.config, false)
+            .unwrap()
+            .replace(&version_line, "");
+        assert!(is_legacy_desktop_entry(&legacy_entry));
+        assert!(!is_legacy_desktop_entry(
+            &desktop_entry(&layout.executable, &layout.config, false).unwrap()
+        ));
+
+        fs::create_dir_all(layout.paths.autostart.parent().unwrap()).unwrap();
+        fs::create_dir_all(layout.paths.launcher.parent().unwrap()).unwrap();
+        fs::write(&layout.paths.autostart, &legacy_entry).unwrap();
+        fs::write(&layout.paths.launcher, &legacy_entry).unwrap();
+
+        let (output, backup) = layout.run(SetupOperation::Complete, false);
+        assert!(backup.is_none());
+        assert_eq!(
+            output.matches("NOTE: detected desktop integration").count(),
+            1
+        );
+        assert!(output.contains("older web-based salmon-watch"));
+        assert!(output.contains("--reinstall"));
+        assert!(output.contains("configuration will not be overwritten"));
+        assert_eq!(
+            fs::read_to_string(&layout.paths.autostart).unwrap(),
+            legacy_entry
+        );
+    }
+
+    #[test]
+    fn one_unversioned_desktop_file_is_not_enough_for_legacy_detection() {
+        let layout = TestLayout::new();
+        layout.run(SetupOperation::CreateConfig, false);
+        fs::create_dir_all(layout.paths.autostart.parent().unwrap()).unwrap();
+        let version_line = format!("{DESKTOP_ENTRY_VERSION_KEY}=2\n");
+        let legacy_entry = desktop_entry(&layout.executable, &layout.config, false)
+            .unwrap()
+            .replace(&version_line, "");
+        fs::write(&layout.paths.autostart, legacy_entry).unwrap();
+
+        let (output, _) = layout.run(SetupOperation::Complete, false);
+        assert!(!output.contains("older web-based salmon-watch"));
+    }
+
+    #[test]
+    fn reinstall_does_not_print_a_redundant_legacy_note() {
+        let layout = TestLayout::new();
+        layout.run(SetupOperation::CreateConfig, false);
+        fs::create_dir_all(layout.paths.autostart.parent().unwrap()).unwrap();
+        fs::create_dir_all(layout.paths.launcher.parent().unwrap()).unwrap();
+        let version_line = format!("{DESKTOP_ENTRY_VERSION_KEY}=2\n");
+        let legacy_entry = desktop_entry(&layout.executable, &layout.config, false)
+            .unwrap()
+            .replace(&version_line, "");
+        fs::write(&layout.paths.autostart, &legacy_entry).unwrap();
+        fs::write(&layout.paths.launcher, legacy_entry).unwrap();
+
+        let (output, _) = layout.run(SetupOperation::Complete, true);
+        assert!(!output.contains("older web-based salmon-watch"));
     }
 
     #[test]
