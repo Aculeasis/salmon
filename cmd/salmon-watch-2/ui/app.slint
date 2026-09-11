@@ -236,12 +236,12 @@ component IncidentCard inherits VerticalLayout {
         alignment: start;
         Image {
             source: root.incident.severity == 4
-                ? @image-url("../../salmon-watch/assets/salmon_magenta.png")
+                ? @image-url("../assets/tray/magenta.png")
                 : root.incident.severity == 3
-                    ? @image-url("../../salmon-watch/assets/salmon_red.png")
+                    ? @image-url("../assets/tray/red.png")
                     : root.incident.severity == 1
-                        ? @image-url("../../salmon-watch/assets/salmon_green.png")
-                        : @image-url("../../salmon-watch/assets/salmon_yellow.png");
+                        ? @image-url("../assets/tray/green.png")
+                        : @image-url("../assets/tray/yellow.png");
             width: 20px;
             height: 20px;
             image-fit: contain;
@@ -287,7 +287,7 @@ component IncidentCard inherits VerticalLayout {
 
 export component MainWindow inherits Window {
     title: "Salmon Watch";
-    icon: @image-url("app-icon.svg");
+    icon: @image-url("../assets/app-icon.svg");
     default-font-family: "Departure Mono";
     // Slint's default is 12px. Increase body, table, incident, and control
     // typography somewhat.
@@ -489,7 +489,7 @@ export component SalmonTray inherits SystemTrayIcon {
     // SystemTrayIcon creates its native backend while this component is being
     // constructed. It therefore needs a decodable icon before Rust can publish
     // the first runtime snapshot and replace it with the current status icon.
-    in property <image> tray-icon: @image-url("../../salmon-watch/assets/salmon_gray.png");
+    in property <image> tray-icon: @image-url("../assets/tray/gray.png");
     in property <string> status-title;
     callback toggle-window();
     callback open-window();

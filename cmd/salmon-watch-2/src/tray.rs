@@ -2,12 +2,12 @@ use anyhow::{Context, Result, bail};
 use image::{Rgba, RgbaImage};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
-const UNKNOWN_ICON: &[u8] = include_bytes!("../../salmon-watch/assets/salmon_gray.png");
-const OK_ICON: &[u8] = include_bytes!("../../salmon-watch/assets/salmon_green.png");
-const INTERNAL_ERROR_ICON: &[u8] = include_bytes!("../../salmon-watch/assets/salmon_magenta.png");
-const WARNING_ICON: &[u8] = include_bytes!("../../salmon-watch/assets/salmon_yellow.png");
-const ERROR_ICON: &[u8] = include_bytes!("../../salmon-watch/assets/salmon_red.png");
-const TRANSPARENT_ICON: &[u8] = include_bytes!("../../salmon-watch/assets/salmon_transparent.png");
+const UNKNOWN_ICON: &[u8] = include_bytes!("../assets/tray/gray.png");
+const OK_ICON: &[u8] = include_bytes!("../assets/tray/green.png");
+const INTERNAL_ERROR_ICON: &[u8] = include_bytes!("../assets/tray/magenta.png");
+const WARNING_ICON: &[u8] = include_bytes!("../assets/tray/yellow.png");
+const ERROR_ICON: &[u8] = include_bytes!("../assets/tray/red.png");
+const TRANSPARENT_ICON: &[u8] = include_bytes!("../assets/tray/transparent.png");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OverallState {

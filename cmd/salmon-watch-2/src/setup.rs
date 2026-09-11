@@ -9,7 +9,7 @@ use crate::cli::SetupOperation;
 use crate::config::Config;
 
 const DEFAULT_CONFIG: &[u8] = include_bytes!("../assets/setup/salmon-watch.yml");
-const APPLICATION_ICON: &[u8] = include_bytes!("../ui/app-icon.svg");
+const APPLICATION_ICON: &[u8] = include_bytes!("../assets/app-icon.svg");
 
 #[derive(Clone, Debug)]
 struct InstallPaths {
