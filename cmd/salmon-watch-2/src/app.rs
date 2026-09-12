@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::cli;
 use crate::cli::Command as CliCommand;
@@ -376,10 +377,16 @@ fn tray_toggle_action(visible: bool, focused: bool) -> TrayToggleAction {
 /// Marshals SIGINT, SIGTERM, and SIGHUP onto the Slint event loop.
 ///
 /// The ctrlc crate invokes handlers on its own thread, where touching Slint
-/// components directly would violate their thread affinity.
+/// components directly would violate their thread affinity. A second signal
+/// deliberately abandons cleanup so an operator can escape a stuck shutdown.
 fn install_termination_handler(tray: &SalmonTray) -> Result<()> {
     let tray_weak = tray.as_weak();
+    let shutdown_requested = AtomicBool::new(false);
     ctrlc::set_handler(move || {
+        if shutdown_requested.swap(true, Ordering::SeqCst) {
+            log::warn!("received another termination signal; forcing exit");
+            std::process::exit(1);
+        }
         log::info!("received termination signal; shutting down");
         let tray_weak = tray_weak.clone();
         if let Err(error) = tray_weak.upgrade_in_event_loop(|tray| tray.invoke_exit()) {
