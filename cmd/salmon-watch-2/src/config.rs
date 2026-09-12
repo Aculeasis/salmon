@@ -116,6 +116,10 @@ impl Config {
 
     /// Validates cross-field invariants that Serde cannot express.
     pub fn validate(&self) -> Result<()> {
+        if self.ws_client.servers.is_empty() {
+            bail!("wsClient.servers must contain at least one server");
+        }
+
         let mut ids = HashSet::new();
         for (index, server) in self.ws_client.servers.iter().enumerate() {
             validate_server_id(&server.id)
@@ -269,6 +273,21 @@ mod tests {
         assert!(config.ws_client.servers[0].tunnel.is_none());
         assert!(config.ws_client.servers[0].tls.is_none());
         assert!(config.ws_client.servers[0].auth.is_none());
+    }
+
+    #[test]
+    fn rejects_empty_server_list() {
+        let error = parse(
+            r#"wsClient:
+  servers: []
+"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "wsClient.servers must contain at least one server"
+        );
     }
 
     #[test]
