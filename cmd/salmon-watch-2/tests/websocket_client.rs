@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use salmon_watch_2::config::{AuthConfig, ServerConfig, TlsConfig};
-use salmon_watch_2::domain::Event;
-use salmon_watch_2::network::run_client;
+use salmon_watch::config::{AuthConfig, ServerConfig, TlsConfig};
+use salmon_watch::domain::Event;
+use salmon_watch::network::run_client;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;

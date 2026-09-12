@@ -44,7 +44,7 @@ struct StderrLogger;
 
 impl log::Log for StderrLogger {
     fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        (metadata.target() == "salmon_watch_2" || metadata.target().starts_with("salmon_watch_2::"))
+        (metadata.target() == "salmon_watch" || metadata.target().starts_with("salmon_watch::"))
             && metadata.level() <= log::max_level()
     }
 
@@ -54,13 +54,13 @@ impl log::Log for StderrLogger {
             let component = component_name(record.target());
             if component.is_empty() {
                 eprintln!(
-                    "{timestamp} {} salmon-watch-2: {}",
+                    "{timestamp} {} salmon-watch: {}",
                     record.level(),
                     record.args()
                 );
             } else {
                 eprintln!(
-                    "{timestamp} {} salmon-watch-2[{component}]: {}",
+                    "{timestamp} {} salmon-watch[{component}]: {}",
                     record.level(),
                     record.args()
                 );
@@ -72,7 +72,7 @@ impl log::Log for StderrLogger {
 }
 
 fn component_name(target: &str) -> &str {
-    target.strip_prefix("salmon_watch_2::").unwrap_or_default()
+    target.strip_prefix("salmon_watch::").unwrap_or_default()
 }
 
 static LOGGER: StderrLogger = StderrLogger;
@@ -106,10 +106,10 @@ mod tests {
 
     #[test]
     fn derives_readable_component_names_from_log_targets() {
-        assert_eq!(component_name("salmon_watch_2"), "");
-        assert_eq!(component_name("salmon_watch_2::runtime"), "runtime");
+        assert_eq!(component_name("salmon_watch"), "");
+        assert_eq!(component_name("salmon_watch::runtime"), "runtime");
         assert_eq!(
-            component_name("salmon_watch_2::network::client"),
+            component_name("salmon_watch::network::client"),
             "network::client"
         );
         assert_eq!(component_name("some_dependency"), "");

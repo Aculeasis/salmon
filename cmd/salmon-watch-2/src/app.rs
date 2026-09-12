@@ -20,7 +20,7 @@ pub fn execute() -> Result<()> {
     let options = cli::parse(std::env::args_os().skip(1))?;
     if options.help {
         println!(
-            "Usage:\n  salmon-watch-2 [OPTIONS]\n  salmon-watch-2 [--config FILE] setup [--reinstall] [create-config|install-autostart|install-launcher]\n  salmon-watch-2 [--config FILE] generate-bearer-token [--output FILE] SERVER_ID\n\nOptions:\n  --config FILE      Configuration file\n  --start-hidden     Start with the status window hidden\n  --scale FACTOR     Set the UI scale factor (must be greater than zero)\n  --log-level LEVEL  Set logging verbosity: trace, debug, info, warn, or error (default: info)\n  --reinstall        With setup, privately back up and replace desktop integration files\n  -h, --help         Print help"
+            "Usage:\n  salmon-watch [OPTIONS]\n  salmon-watch [--config FILE] setup [--reinstall] [create-config|install-autostart|install-launcher]\n  salmon-watch [--config FILE] generate-bearer-token [--output FILE] SERVER_ID\n\nOptions:\n  --config FILE      Configuration file\n  --start-hidden     Start with the status window hidden\n  --scale FACTOR     Set the UI scale factor (must be greater than zero)\n  --log-level LEVEL  Set logging verbosity: trace, debug, info, warn, or error (default: info)\n  --reinstall        With setup, privately back up and replace desktop integration files\n  -h, --help         Print help"
         );
         return Ok(());
     }
