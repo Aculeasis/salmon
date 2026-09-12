@@ -1,13 +1,15 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, anyhow};
+use clap::ValueEnum;
 
 /// User-selectable maximum verbosity.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum LogLevel {
     Trace,
     Debug,
     Info,
+    #[value(alias = "warning")]
     Warn,
     Error,
 }

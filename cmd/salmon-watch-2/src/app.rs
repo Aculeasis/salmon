@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cli;
 use crate::cli::Command as CliCommand;
 use crate::config::{self, Config};
-use crate::logging::{self, LogLevel};
+use crate::logging;
 use crate::notification::{DesktopNotificationSink, NotificationSink};
 use crate::persistence::{self, StateFile, Store, Theme};
 use crate::runtime::{Command, RuntimeHandle};
@@ -23,15 +23,9 @@ use slint::{CloseRequestResponse, ComponentHandle, Timer};
 /// exported before Slint or any worker thread exists; mutating the environment
 /// later would be both ineffective and unsafe in a multithreaded process.
 pub fn execute() -> Result<()> {
-    let options = cli::parse(std::env::args_os().skip(1))?;
+    let options = cli::parse_env();
     if options.version {
         print!("{}", crate::build_info::full_description());
-        return Ok(());
-    }
-    if options.help {
-        println!(
-            "Usage:\n  salmon-watch [OPTIONS]\n  salmon-watch [--config FILE] setup [--reinstall] [create-config|install-autostart|install-launcher]\n  salmon-watch [--config FILE] generate-bearer-token [--output FILE] SERVER_ID\n\nOptions:\n  --config FILE      Configuration file\n  --start-hidden     Start with the status window hidden\n  --scale FACTOR     Set the UI scale factor (must be greater than zero)\n  --log-level LEVEL  Set logging verbosity: trace, debug, info, warn, or error (default: info)\n  --reinstall        With setup, privately back up and replace desktop integration files\n  -V, --version      Print version and build information\n  -h, --help         Print help"
-        );
         return Ok(());
     }
     if let CliCommand::GenerateBearerToken { server_id, output } = &options.command {
@@ -57,7 +51,7 @@ pub fn execute() -> Result<()> {
         crate::setup::execute(&mut output_stream, &config_path, operation, reinstall)?;
         return Ok(());
     }
-    logging::init(options.log_level.unwrap_or(LogLevel::Info))?;
+    logging::init(options.log_level)?;
     let automatic_scale = options.scale.is_none()
         && std::env::var_os("SLINT_SCALE_FACTOR").is_none()
         && std::env::var_os("WINIT_X11_SCALE_FACTOR").is_none();

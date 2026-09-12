@@ -1,22 +1,20 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use clap::{Args, Parser, Subcommand};
 
 use crate::logging::LogLevel;
 
 /// Parsed process options shared by normal execution and maintenance commands.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Options {
     pub start_hidden: bool,
     /// Explicit Slint scale override; `None` preserves backend DPI detection.
     pub scale: Option<f32>,
-    /// Explicit filter; `None` selects the application default (`info`).
-    pub log_level: Option<LogLevel>,
+    pub log_level: LogLevel,
     /// Config override; resolved to the XDG default by the command dispatcher.
     pub config: Option<PathBuf>,
     pub command: Command,
-    pub help: bool,
     pub version: bool,
 }
 
@@ -45,180 +43,174 @@ pub enum SetupOperation {
     InstallLauncher,
 }
 
-/// Parses arguments without exiting or printing, so callers control error UX.
+/// Clap's declarative grammar, kept private so the rest of the application is
+/// independent of parser-specific subcommand wrappers.
+#[derive(Debug, Parser)]
+#[command(
+    name = "salmon-watch",
+    about = "Show Salmon status in the desktop tray",
+    disable_version_flag = true
+)]
+struct Cli {
+    /// Configuration file.
+    #[arg(long, global = true, value_name = "FILE")]
+    config: Option<PathBuf>,
+
+    /// Start with the status window hidden.
+    #[arg(long)]
+    start_hidden: bool,
+
+    /// Set the UI scale factor instead of using automatic DPI detection.
+    #[arg(long, value_name = "FACTOR", value_parser = parse_scale)]
+    scale: Option<f32>,
+
+    /// Set logging verbosity.
+    #[arg(
+        long,
+        value_enum,
+        ignore_case = true,
+        default_value = "info",
+        value_name = "LEVEL"
+    )]
+    log_level: LogLevel,
+
+    /// Print version and build information.
+    #[arg(short = 'V', long, global = true)]
+    version: bool,
+
+    #[command(subcommand)]
+    command: Option<CliCommand>,
+}
+
+/// Maintenance commands represented in the shape Clap expects.
+#[derive(Debug, Subcommand)]
+enum CliCommand {
+    /// Create configuration and install the desktop integration.
+    Setup(SetupArgs),
+    /// Generate a bearer token for one Salmon server.
+    GenerateBearerToken(GenerateBearerTokenArgs),
+}
+
+/// Arguments shared by complete and targeted setup runs.
+#[derive(Debug, Args)]
+struct SetupArgs {
+    /// Privately back up and replace existing desktop integration files.
+    #[arg(long, global = true)]
+    reinstall: bool,
+
+    #[command(subcommand)]
+    operation: Option<SetupCommand>,
+}
+
+/// Optional restriction to one part of setup.
+#[derive(Debug, Subcommand)]
+enum SetupCommand {
+    /// Create the default configuration if it does not exist.
+    CreateConfig,
+    /// Install the desktop autostart entry.
+    InstallAutostart,
+    /// Install the desktop application launcher.
+    InstallLauncher,
+}
+
+/// Arguments for secure bearer-token generation.
+#[derive(Debug, Args)]
+struct GenerateBearerTokenArgs {
+    /// ID of the server that will use this token.
+    #[arg(value_name = "SERVER_ID")]
+    server_id: String,
+
+    /// Token filename; defaults next to the configuration under `tokens/`.
+    #[arg(long, value_name = "FILE")]
+    output: Option<PathBuf>,
+}
+
+impl From<Cli> for Options {
+    fn from(cli: Cli) -> Self {
+        let command = match cli.command {
+            None => Command::Run,
+            Some(CliCommand::Setup(setup)) => Command::Setup {
+                operation: match setup.operation {
+                    None => SetupOperation::Complete,
+                    Some(SetupCommand::CreateConfig) => SetupOperation::CreateConfig,
+                    Some(SetupCommand::InstallAutostart) => SetupOperation::InstallAutostart,
+                    Some(SetupCommand::InstallLauncher) => SetupOperation::InstallLauncher,
+                },
+                reinstall: setup.reinstall,
+            },
+            Some(CliCommand::GenerateBearerToken(token)) => Command::GenerateBearerToken {
+                server_id: token.server_id,
+                output: token.output,
+            },
+        };
+
+        Self {
+            start_hidden: cli.start_hidden,
+            scale: cli.scale,
+            log_level: cli.log_level,
+            config: cli.config,
+            command,
+            version: cli.version,
+        }
+    }
+}
+
+/// Parses an explicit argv tail without printing or exiting.
 ///
-/// Global `--config` remains accepted after subcommands for compatibility with
-/// common CLI usage. Parsing stops at a subcommand and delegates its remaining
-/// grammar to prevent accidentally accepting run-only flags there.
-pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options> {
-    let mut options = Options::default();
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--start-hidden") => options.start_hidden = true,
-            Some("--config") => {
-                options.config = Some(PathBuf::from(
-                    args.next().context("--config requires a filename")?,
-                ));
-            }
-            Some(arg) if arg.starts_with("--config=") => {
-                options.config = Some(PathBuf::from(&arg[9..]));
-            }
-            Some("--scale") => {
-                let value = args.next().context("--scale requires a numeric factor")?;
-                options.scale = Some(parse_scale(&value)?);
-            }
-            Some(arg) if arg.starts_with("--scale=") => {
-                options.scale = Some(parse_scale(OsString::from(&arg[8..]).as_ref())?);
-            }
-            Some("--log-level") => {
-                let value = args.next().context("--log-level requires a level")?;
-                options.log_level = Some(parse_log_level(&value)?);
-            }
-            Some(arg) if arg.starts_with("--log-level=") => {
-                options.log_level = Some(parse_log_level(OsString::from(&arg[12..]).as_ref())?);
-            }
-            Some("generate-bearer-token") => {
-                options.command = parse_generate_bearer_token(&mut args, &mut options.config)?;
-                break;
-            }
-            Some("setup") => {
-                options.command = parse_setup(&mut args, &mut options.config, &mut options.help)?;
-                break;
-            }
-            Some("-h" | "--help") => options.help = true,
-            Some("-V" | "--version") => options.version = true,
-            Some(arg) => anyhow::bail!("unknown argument {arg:?}"),
-            None => anyhow::bail!("arguments must be valid UTF-8"),
-        }
-    }
-    Ok(options)
+/// This entry point is used by tests; normal startup uses [`parse_env`], which
+/// lets Clap render help and argument errors using its standard CLI behavior.
+pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, clap::Error> {
+    Cli::try_parse_from(std::iter::once(OsString::from("salmon-watch")).chain(args))
+        .map(Options::from)
 }
 
-/// Parses setup's optional single operation plus modifiers.
-///
-/// The operation is positional and may appear at most once; keeping this
-/// separate from the top-level parser prevents setup-only flags from leaking
-/// into normal application startup.
-fn parse_setup(
-    args: &mut impl Iterator<Item = OsString>,
-    config: &mut Option<PathBuf>,
-    help: &mut bool,
-) -> Result<Command> {
-    let mut operation = SetupOperation::Complete;
-    let mut operation_seen = false;
-    let mut reinstall = false;
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--reinstall") => reinstall = true,
-            Some("-h" | "--help") => *help = true,
-            Some("--config") => {
-                *config = Some(PathBuf::from(
-                    args.next().context("--config requires a filename")?,
-                ));
-            }
-            Some(value) if value.starts_with("--config=") => {
-                *config = Some(PathBuf::from(&value[9..]));
-            }
-            Some("create-config" | "install-autostart" | "install-launcher") if !operation_seen => {
-                operation = match arg.to_str().expect("matched UTF-8 setup operation") {
-                    "create-config" => SetupOperation::CreateConfig,
-                    "install-autostart" => SetupOperation::InstallAutostart,
-                    "install-launcher" => SetupOperation::InstallLauncher,
-                    _ => unreachable!(),
-                };
-                operation_seen = true;
-            }
-            Some(value) => anyhow::bail!("unexpected setup argument {value:?}"),
-            None => anyhow::bail!("arguments must be valid UTF-8"),
-        }
-    }
-    Ok(Command::Setup {
-        operation,
-        reinstall,
-    })
+/// Parses the process arguments, printing generated help or errors and exiting
+/// when Clap encounters a terminal CLI action.
+pub fn parse_env() -> Options {
+    Cli::parse().into()
 }
 
-/// Parses token generation without ever accepting the secret itself on the
-/// command line, where it would be exposed through shell history and `ps`.
-fn parse_generate_bearer_token(
-    args: &mut impl Iterator<Item = OsString>,
-    config: &mut Option<PathBuf>,
-) -> Result<Command> {
-    let mut server_id = None;
-    let mut output = None;
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--output") => {
-                output = Some(PathBuf::from(
-                    args.next().context("--output requires a filename")?,
-                ));
-            }
-            Some(value) if value.starts_with("--output=") => {
-                output = Some(PathBuf::from(&value[9..]));
-            }
-            Some("--config") => {
-                *config = Some(PathBuf::from(
-                    args.next().context("--config requires a filename")?,
-                ));
-            }
-            Some(value) if value.starts_with("--config=") => {
-                *config = Some(PathBuf::from(&value[9..]));
-            }
-            Some(value) if !value.starts_with('-') && server_id.is_none() => {
-                server_id = Some(value.to_owned());
-            }
-            Some(value) => anyhow::bail!("unexpected generate-bearer-token argument {value:?}"),
-            None => anyhow::bail!("arguments must be valid UTF-8"),
-        }
-    }
-    Ok(Command::GenerateBearerToken {
-        server_id: server_id.context("generate-bearer-token requires SERVER_ID")?,
-        output,
-    })
-}
-
-fn parse_log_level(value: &std::ffi::OsStr) -> Result<LogLevel> {
-    value
-        .to_str()
-        .context("--log-level must be valid UTF-8")?
-        .parse()
-}
-
-fn parse_scale(value: &std::ffi::OsStr) -> Result<f32> {
-    let value = value.to_str().context("--scale must be valid UTF-8")?;
+fn parse_scale(value: &str) -> Result<f32, String> {
     let scale: f32 = value
         .parse()
-        .with_context(|| format!("invalid scale factor {value:?}"))?;
-    anyhow::ensure!(
-        scale.is_finite() && scale > 0.0,
-        "scale factor must be greater than zero"
-    );
-    Ok(scale)
+        .map_err(|_| format!("invalid scale factor {value:?}"))?;
+    if scale.is_finite() && scale > 0.0 {
+        Ok(scale)
+    } else {
+        Err("scale factor must be greater than zero".into())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use clap::error::ErrorKind;
+
     use super::*;
 
     #[test]
-    fn defaults_are_empty() {
-        assert_eq!(parse([]).unwrap(), Options::default());
+    fn defaults_select_run_mode_and_info_logging() {
+        let options = parse([]).unwrap();
+        assert_eq!(options.command, Command::Run);
+        assert_eq!(options.log_level, LogLevel::Info);
+        assert!(!options.start_hidden);
+        assert_eq!(options.scale, None);
+        assert_eq!(options.config, None);
+        assert!(!options.version);
     }
 
     #[test]
-    fn parses_config_start_hidden_and_scale() {
+    fn parses_config_start_hidden_scale_and_log_level() {
         let options = parse([
             "--config=config.yml".into(),
             "--start-hidden".into(),
             "--scale=1.25".into(),
-            "--log-level=debug".into(),
+            "--log-level=DEBUG".into(),
         ])
         .unwrap();
         assert_eq!(options.config, Some(PathBuf::from("config.yml")));
         assert!(options.start_hidden);
         assert_eq!(options.scale, Some(1.25));
-        assert_eq!(options.log_level, Some(LogLevel::Debug));
+        assert_eq!(options.log_level, LogLevel::Debug);
     }
 
     #[test]
@@ -257,7 +249,6 @@ mod tests {
                 output: Some(PathBuf::from("secret.token")),
             }
         );
-        assert!(parse(["setup".into(), "--help".into()]).unwrap().help);
 
         assert!(parse(["generate-bearer-token".into()]).is_err());
         assert!(parse(["generate-bearer-token".into(), "one".into(), "two".into()]).is_err());
@@ -314,5 +305,24 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn clap_generates_root_and_subcommand_help() {
+        let root = parse(["--help".into()]).unwrap_err();
+        assert_eq!(root.kind(), ErrorKind::DisplayHelp);
+        let root = root.to_string();
+        assert!(root.contains("Show Salmon status in the desktop tray"));
+        assert!(root.contains("generate-bearer-token"));
+        assert!(root.contains("--log-level <LEVEL>"));
+        assert!(root.contains("[default: info]"));
+
+        let setup = parse(["setup".into(), "--help".into()]).unwrap_err();
+        assert_eq!(setup.kind(), ErrorKind::DisplayHelp);
+        let setup = setup.to_string();
+        assert!(setup.contains("create-config"));
+        assert!(setup.contains("install-autostart"));
+        assert!(setup.contains("install-launcher"));
+        assert!(setup.contains("--reinstall"));
     }
 }
