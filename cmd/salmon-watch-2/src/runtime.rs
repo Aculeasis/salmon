@@ -11,7 +11,7 @@ use crate::domain::{
     AppState, Effect, Event, Incident, IncidentState, Reducer, SnoozeAction, UiSnapshot,
 };
 use crate::network;
-use crate::notification::{DesktopNotificationSink, NotificationSink};
+use crate::notification::NotificationDispatcher;
 
 /// Thread-safe handoff from the reducer thread to the Slint event loop.
 type Publisher = Arc<dyn Fn(UiSnapshot) + Send + Sync>;
@@ -133,13 +133,15 @@ fn snooze_failure_notification(action: &SnoozeAction, details: &str) -> Option<(
     ))
 }
 
-/// Runs potentially blocking desktop integration outside the event pump.
-fn send_desktop_notification(title: String, body: String) {
-    tokio::task::spawn_blocking(move || {
-        if let Err(error) = DesktopNotificationSink.push(&title, &body) {
-            log::error!("{error:#}");
-        }
-    });
+/// Queues a runtime notification when desktop delivery initialized successfully.
+fn enqueue_desktop_notification(
+    notifications: &mut Option<NotificationDispatcher>,
+    title: String,
+    body: String,
+) {
+    if let Some(dispatcher) = notifications {
+        dispatcher.enqueue(title, body);
+    }
 }
 
 fn incident_line(server_id: &str, action: &str, incident: &Incident) -> String {
@@ -296,10 +298,9 @@ fn run(
 /// The one-second tick republishes even without a mutation so relative timestamps
 /// advance. Snooze writes are awaited and acknowledged before reducer commit;
 /// failed explicit actions notify the user, while failed expiry cleanup is
-/// proposed again by the next tick. Desktop notifications are fire-and-forget
-/// blocking jobs so a slow notification daemon cannot stall network processing.
-/// Their handles are not part of `network_tasks`; Tokio's own runtime teardown
-/// remains responsible for already-started blocking jobs.
+/// proposed again by the next tick. Desktop notifications pass through one
+/// bounded, nonblocking FIFO so a slow notification daemon cannot stall network
+/// processing or create an unbounded number of blocking jobs.
 async fn run_async(
     config: Config,
     snoozes: BTreeMap<String, i64>,
@@ -308,6 +309,13 @@ async fn run_async(
     mut commands: mpsc::Receiver<Command>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let mut notifications = match NotificationDispatcher::start() {
+        Ok(dispatcher) => Some(dispatcher),
+        Err(error) => {
+            log::error!("desktop notifications are unavailable: {error:#}");
+            None
+        }
+    };
     let ids = config
         .ws_client
         .servers
@@ -347,7 +355,7 @@ async fn run_async(
         for effect in transition.effects {
             match effect {
                 Effect::Notify { title, body } => {
-                    send_desktop_notification(title, body);
+                    enqueue_desktop_notification(&mut notifications, title, body);
                 }
                 Effect::PersistSnoozes { snoozes, action } => {
                     let persist = persist.clone();
@@ -368,7 +376,7 @@ async fn run_async(
                             if let Some((title, body)) =
                                 snooze_failure_notification(&action, &details)
                             {
-                                send_desktop_notification(title, body);
+                                enqueue_desktop_notification(&mut notifications, title, body);
                             }
                         }
                         Err(error) => {
@@ -377,7 +385,7 @@ async fn run_async(
                             if let Some((title, body)) =
                                 snooze_failure_notification(&action, &details)
                             {
-                                send_desktop_notification(title, body);
+                                enqueue_desktop_notification(&mut notifications, title, body);
                             }
                         }
                     }
@@ -404,6 +412,9 @@ async fn run_async(
         }
     }
     log::info!("network services stopped");
+    if let Some(dispatcher) = notifications {
+        dispatcher.shutdown();
+    }
 }
 
 /// Converts a relative UI action at the last responsible moment.
