@@ -1,6 +1,8 @@
+use std::collections::BTreeMap;
+
 use super::NotificationData;
 
-/// Every external input accepted by the domain reducer.
+/// Every input accepted by the domain reducer.
 ///
 /// All `at` and `until` values are Unix seconds. Network producers and UI
 /// commands share this stream, so the reducer is the single authority for
@@ -42,6 +44,10 @@ pub enum Event {
     },
     Unsnooze {
         key: String,
+    },
+    /// Internal acknowledgement applied only after the exact map was written.
+    SnoozesPersisted {
+        snoozes: BTreeMap<String, i64>,
     },
     ForgetStale {
         /// Fully qualified key; forgetting never implies remote recovery.

@@ -38,6 +38,20 @@ fn notify(r: &mut Reducer, server: &str, data: NotificationData, at: i64) -> Tra
     })
 }
 
+fn commit_proposed_snoozes(r: &mut Reducer, transition: Transition) -> SnoozeAction {
+    assert!(!transition.changed);
+    let [Effect::PersistSnoozes { snoozes, action }] = transition.effects.as_slice() else {
+        panic!("expected exactly one snooze persistence effect");
+    };
+    assert!(
+        r.reduce(Event::SnoozesPersisted {
+            snoozes: snoozes.clone(),
+        })
+        .changed
+    );
+    action.clone()
+}
+
 #[test]
 fn starts_with_configured_servers_in_unknown_state() {
     let r = reducer(&["second", "first"]);
@@ -133,10 +147,11 @@ fn deltas_drive_notifications_but_total_drives_state() {
 #[test]
 fn snoozed_incident_appearance_resolution_and_reappearance_do_not_notify() {
     let mut r = reducer(&["local"]);
-    r.reduce(Event::Snooze {
+    let transition = r.reduce(Event::Snooze {
         key: "local.disk".into(),
         until: 100,
     });
+    commit_proposed_snoozes(&mut r, transition);
 
     let mut data = notification(vec![incident("disk", IncidentState::Error)]);
     data.added.push(incident("disk", IncidentState::Error));
@@ -158,10 +173,11 @@ fn snoozed_incident_appearance_resolution_and_reappearance_do_not_notify() {
 #[test]
 fn snoozed_connection_incident_lifecycle_does_not_notify() {
     let mut r = reducer(&["local"]);
-    r.reduce(Event::Snooze {
+    let transition = r.reduce(Event::Snooze {
         key: "internal.connection.local".into(),
         until: 100,
     });
+    commit_proposed_snoozes(&mut r, transition);
 
     assert!(
         r.reduce(Event::Disconnected {
@@ -201,10 +217,11 @@ fn snoozed_connection_incident_lifecycle_does_not_notify() {
 #[test]
 fn snoozed_tunnel_incident_lifecycle_does_not_notify() {
     let mut r = reducer(&["remote"]);
-    r.reduce(Event::Snooze {
+    let transition = r.reduce(Event::Snooze {
         key: "internal.tunnel.remote".into(),
         until: 100,
     });
+    commit_proposed_snoozes(&mut r, transition);
 
     assert!(
         r.reduce(Event::TunnelFailed {
@@ -521,35 +538,69 @@ fn snooze_classifies_and_unsnooze_restores_incident() {
         key: "local.disk".into(),
         until: 100,
     });
-    assert_eq!(transition.effects, [Effect::PersistSnoozes]);
+    assert_eq!(r.state().snapshot(50).active.len(), 1);
+    assert!(r.state().snapshot(50).snoozed.is_empty());
+    assert_eq!(
+        commit_proposed_snoozes(&mut r, transition),
+        SnoozeAction::Set {
+            key: "local.disk".into(),
+            until: 100,
+        }
+    );
     assert_eq!(r.state().snapshot(50).snoozed.len(), 1);
     assert!(r.state().snapshot(50).active.is_empty());
-    r.reduce(Event::Unsnooze {
+    let transition = r.reduce(Event::Unsnooze {
         key: "local.disk".into(),
     });
+    assert!(r.state().snapshot(50).active.is_empty());
+    assert_eq!(
+        commit_proposed_snoozes(&mut r, transition),
+        SnoozeAction::Remove {
+            key: "local.disk".into(),
+        }
+    );
     assert_eq!(r.state().snapshot(50).active.len(), 1);
 }
 
 #[test]
 fn snooze_expires_at_exact_boundary_and_requests_persistence() {
     let mut r = reducer(&["local"]);
-    r.reduce(Event::Snooze {
+    let transition = r.reduce(Event::Snooze {
         key: "local.disk".into(),
         until: 100,
     });
-    assert!(!r.reduce(Event::Tick { at: 99 }).changed);
-    let transition = r.reduce(Event::Tick { at: 100 });
-    assert!(transition.changed);
-    assert_eq!(transition.effects, [Effect::PersistSnoozes]);
+    commit_proposed_snoozes(&mut r, transition);
+    assert_eq!(r.reduce(Event::Tick { at: 99 }), Transition::default());
+
+    let first_attempt = r.reduce(Event::Tick { at: 100 });
+    assert!(!first_attempt.changed);
+    assert_eq!(
+        first_attempt.effects,
+        [Effect::PersistSnoozes {
+            snoozes: BTreeMap::new(),
+            action: SnoozeAction::Expire {
+                keys: vec!["local.disk".into()],
+            },
+        }]
+    );
+    assert!(r.state().snoozes().contains_key("local.disk"));
+
+    // A failed write means no commit event, so the next tick proposes the same
+    // cleanup again without any special retry state.
+    let retry = r.reduce(Event::Tick { at: 101 });
+    assert_eq!(retry.effects, first_attempt.effects);
+    commit_proposed_snoozes(&mut r, retry);
+    assert!(r.state().snoozes().is_empty());
 }
 
 #[test]
 fn snooze_survives_updates_and_disconnects() {
     let mut r = reducer(&["local"]);
-    r.reduce(Event::Snooze {
+    let transition = r.reduce(Event::Snooze {
         key: "local.disk".into(),
         until: 100,
     });
+    commit_proposed_snoozes(&mut r, transition);
     notify(
         &mut r,
         "local",
@@ -646,10 +697,11 @@ fn severity_precedence_and_snoozed_state_are_independent() {
         ]),
         1,
     );
-    r.reduce(Event::Snooze {
+    let transition = r.reduce(Event::Snooze {
         key: "local.err".into(),
         until: 100,
     });
+    commit_proposed_snoozes(&mut r, transition);
     let snapshot = r.state().snapshot(50);
     assert_eq!(snapshot.alerting_state, OverallState::Warning);
     assert_eq!(snapshot.snoozed_state, Some(OverallState::Error));

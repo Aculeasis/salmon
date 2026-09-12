@@ -137,8 +137,9 @@ impl AppState {
 
     /// Projects canonical state while classifying snoozes at `now` (Unix seconds).
     ///
-    /// Expired entries are treated as active here but are removed only by a
-    /// [`crate::domain::Event::Tick`], keeping projection side-effect free.
+    /// Expired entries are treated as active here. A tick proposes their
+    /// removal, but live state changes only after persistence acknowledges the
+    /// replacement map, keeping projection side-effect free.
     pub fn snapshot(&self, now: i64) -> UiSnapshot {
         let mut incidents: Vec<_> = self.internal_incidents.values().cloned().collect();
         for id in &self.server_order {

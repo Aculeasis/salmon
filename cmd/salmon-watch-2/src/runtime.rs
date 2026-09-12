@@ -7,7 +7,9 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 
 use crate::config::Config;
-use crate::domain::{AppState, Effect, Event, Incident, IncidentState, Reducer, UiSnapshot};
+use crate::domain::{
+    AppState, Effect, Event, Incident, IncidentState, Reducer, SnoozeAction, UiSnapshot,
+};
 use crate::network;
 use crate::notification::{DesktopNotificationSink, NotificationSink};
 
@@ -90,10 +92,6 @@ impl EventLogState {
                 level: log::Level::Debug,
                 message: format!("server {server_id} received heartbeat"),
             }],
-            Event::Snooze { key, until } => {
-                vec![info(format!("snoozed incident {key} until {until}"))]
-            }
-            Event::Unsnooze { key } => vec![info(format!("unsnoozed incident {key}"))],
             Event::ForgetStale { key } => vec![info(format!("forgot stale incident {key}"))],
             _ => Vec::new(),
         }
@@ -105,6 +103,43 @@ fn info(message: String) -> EventLogLine {
         level: log::Level::Info,
         message,
     }
+}
+
+/// Produces success logs only after the proposed snooze map is durable.
+fn snooze_success_lines(action: &SnoozeAction) -> Vec<EventLogLine> {
+    match action {
+        SnoozeAction::Set { key, until } => {
+            vec![info(format!("snoozed incident {key} until {until}"))]
+        }
+        SnoozeAction::Remove { key } => vec![info(format!("unsnoozed incident {key}"))],
+        SnoozeAction::Expire { keys } => keys
+            .iter()
+            .map(|key| info(format!("snooze expired for incident {key}")))
+            .collect(),
+    }
+}
+
+/// Builds user feedback for failed explicit actions without notifying on
+/// automatic expiration retries.
+fn snooze_failure_notification(action: &SnoozeAction, details: &str) -> Option<(String, String)> {
+    let title = match action {
+        SnoozeAction::Set { key, .. } => format!("Failed to snooze incident {key}"),
+        SnoozeAction::Remove { key } => format!("Failed to unsnooze incident {key}"),
+        SnoozeAction::Expire { .. } => return None,
+    };
+    Some((
+        title,
+        format!("The snooze state was not changed.\n\n{details}"),
+    ))
+}
+
+/// Runs potentially blocking desktop integration outside the event pump.
+fn send_desktop_notification(title: String, body: String) {
+    tokio::task::spawn_blocking(move || {
+        if let Err(error) = DesktopNotificationSink.push(&title, &body) {
+            log::error!("{error:#}");
+        }
+    });
 }
 
 fn incident_line(server_id: &str, action: &str, incident: &Incident) -> String {
@@ -259,10 +294,12 @@ fn run(
 /// Main event pump and sole owner of the reducer.
 ///
 /// The one-second tick republishes even without a mutation so relative timestamps
-/// advance. Snooze writes are awaited to preserve ordering; desktop notifications
-/// are fire-and-forget blocking jobs so a slow notification daemon cannot stall
-/// network processing. Their handles are not part of `network_tasks`; Tokio's
-/// own runtime teardown remains responsible for already-started blocking jobs.
+/// advance. Snooze writes are awaited and acknowledged before reducer commit;
+/// failed explicit actions notify the user, while failed expiry cleanup is
+/// proposed again by the next tick. Desktop notifications are fire-and-forget
+/// blocking jobs so a slow notification daemon cannot stall network processing.
+/// Their handles are not part of `network_tasks`; Tokio's own runtime teardown
+/// remains responsible for already-started blocking jobs.
 async fn run_async(
     config: Config,
     snoozes: BTreeMap<String, i64>,
@@ -306,31 +343,48 @@ async fn run_async(
             log::log!(line.level, "{}", line.message);
         }
         let transition = reducer.reduce(event);
+        let mut changed = transition.changed;
         for effect in transition.effects {
             match effect {
                 Effect::Notify { title, body } => {
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(error) = DesktopNotificationSink.push(&title, &body) {
-                            log::error!("{error:#}");
-                        }
-                    });
+                    send_desktop_notification(title, body);
                 }
-                Effect::PersistSnoozes => {
-                    let snoozes = reducer.state().snoozes().clone();
+                Effect::PersistSnoozes { snoozes, action } => {
                     let persist = persist.clone();
-                    match tokio::task::spawn_blocking(move || persist(&snoozes)).await {
-                        Ok(Ok(())) => {}
+                    match tokio::task::spawn_blocking(move || persist(&snoozes).map(|()| snoozes))
+                        .await
+                    {
+                        Ok(Ok(snoozes)) => {
+                            for line in snooze_success_lines(&action) {
+                                log::log!(line.level, "{}", line.message);
+                            }
+                            let committed = reducer.reduce(Event::SnoozesPersisted { snoozes });
+                            debug_assert!(committed.effects.is_empty());
+                            changed |= committed.changed;
+                        }
                         Ok(Err(error)) => {
-                            log::error!("failed to persist snoozes: {error:#}")
+                            let details = format!("{error:#}");
+                            log::error!("failed to persist snoozes: {details}");
+                            if let Some((title, body)) =
+                                snooze_failure_notification(&action, &details)
+                            {
+                                send_desktop_notification(title, body);
+                            }
                         }
                         Err(error) => {
-                            log::error!("snooze persistence worker failed: {error}")
+                            let details = format!("snooze persistence worker failed: {error}");
+                            log::error!("{details}");
+                            if let Some((title, body)) =
+                                snooze_failure_notification(&action, &details)
+                            {
+                                send_desktop_notification(title, body);
+                            }
                         }
                     }
                 }
             }
         }
-        if transition.changed || refresh {
+        if changed || refresh {
             (publish)(reducer.state().snapshot(unix_now()));
         }
     }
@@ -511,5 +565,56 @@ mod tests {
         );
         assert!(line.ends_with('…'));
         assert_eq!(line.matches('x').count(), MAX_LOG_DETAILS_CHARS);
+    }
+
+    #[test]
+    fn snooze_feedback_reflects_persistence_outcome() {
+        let mut event_logs = EventLogState::default();
+        assert!(
+            event_logs
+                .lines(&Event::Snooze {
+                    key: "home.disk".into(),
+                    until: 100,
+                })
+                .is_empty(),
+            "a request must not be logged as successful before persistence"
+        );
+
+        let set = SnoozeAction::Set {
+            key: "home.disk".into(),
+            until: 100,
+        };
+        assert_eq!(
+            snooze_success_lines(&set),
+            [info("snoozed incident home.disk until 100".into())]
+        );
+        let (title, body) = snooze_failure_notification(&set, "disk full").unwrap();
+        assert_eq!(title, "Failed to snooze incident home.disk");
+        assert!(body.contains("not changed"));
+        assert!(body.contains("disk full"));
+
+        let remove = SnoozeAction::Remove {
+            key: "home.disk".into(),
+        };
+        assert_eq!(
+            snooze_success_lines(&remove),
+            [info("unsnoozed incident home.disk".into())]
+        );
+        assert_eq!(
+            snooze_failure_notification(&remove, "read-only").unwrap().0,
+            "Failed to unsnooze incident home.disk"
+        );
+
+        let expire = SnoozeAction::Expire {
+            keys: vec!["home.disk".into(), "home.backup".into()],
+        };
+        assert_eq!(
+            snooze_success_lines(&expire),
+            [
+                info("snooze expired for incident home.disk".into()),
+                info("snooze expired for incident home.backup".into()),
+            ]
+        );
+        assert!(snooze_failure_notification(&expire, "read-only").is_none());
     }
 }

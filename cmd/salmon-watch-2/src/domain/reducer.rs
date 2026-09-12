@@ -1,10 +1,10 @@
-use super::{AppState, Effect, Event, Incident, IncidentState, Transition};
+use super::{AppState, Effect, Event, Incident, IncidentState, SnoozeAction, Transition};
 
 /// Serial state machine for network events and user incident actions.
 ///
 /// A reducer instance must be driven by one task: ordering events here avoids
-/// locks in the domain model and guarantees that a published snapshot already
-/// includes the state responsible for its effects.
+/// locks in the domain model. Snooze requests deliberately produce persistence
+/// proposals without mutation; only the serialized acknowledgement commits one.
 pub struct Reducer {
     state: AppState,
 }
@@ -22,7 +22,8 @@ impl Reducer {
     ///
     /// Events for unknown server IDs are ignored defensively. Notification
     /// `total` lists replace per-server state, while only `added` and `removed`
-    /// lists create desktop notifications.
+    /// lists create desktop notifications. Snooze persistence uses a two-phase
+    /// proposal/acknowledgement so failed writes cannot alter live behavior.
     pub fn reduce(&mut self, event: Event) -> Transition {
         match event {
             Event::Connected { server_id, at } => self.connected(&server_id, at),
@@ -78,23 +79,41 @@ impl Reducer {
                 }
             }
             Event::Snooze { key, until } => {
-                let changed = self.state.snoozed.insert(key, until) != Some(until);
+                if self.state.snoozed.get(&key) == Some(&until) {
+                    return Transition::default();
+                }
+                let mut snoozes = self.state.snoozed.clone();
+                snoozes.insert(key.clone(), until);
                 Transition {
-                    changed,
-                    effects: changed
-                        .then_some(Effect::PersistSnoozes)
-                        .into_iter()
-                        .collect(),
+                    changed: false,
+                    effects: vec![Effect::PersistSnoozes {
+                        snoozes,
+                        action: SnoozeAction::Set { key, until },
+                    }],
                 }
             }
             Event::Unsnooze { key } => {
-                let changed = self.state.snoozed.remove(&key).is_some();
+                if !self.state.snoozed.contains_key(&key) {
+                    return Transition::default();
+                }
+                let mut snoozes = self.state.snoozed.clone();
+                snoozes.remove(&key);
+                Transition {
+                    changed: false,
+                    effects: vec![Effect::PersistSnoozes {
+                        snoozes,
+                        action: SnoozeAction::Remove { key },
+                    }],
+                }
+            }
+            Event::SnoozesPersisted { snoozes } => {
+                let changed = self.state.snoozed != snoozes;
+                if changed {
+                    self.state.snoozed = snoozes;
+                }
                 Transition {
                     changed,
-                    effects: changed
-                        .then_some(Effect::PersistSnoozes)
-                        .into_iter()
-                        .collect(),
+                    effects: Vec::new(),
                 }
             }
             Event::ForgetStale { key } => {
@@ -112,15 +131,24 @@ impl Reducer {
                 }
             }
             Event::Tick { at } => {
-                let before = self.state.snoozed.len();
-                self.state.snoozed.retain(|_, until| *until > at);
-                let changed = before != self.state.snoozed.len();
+                let keys = self
+                    .state
+                    .snoozed
+                    .iter()
+                    .filter(|(_, until)| **until <= at)
+                    .map(|(key, _)| key.clone())
+                    .collect::<Vec<_>>();
+                if keys.is_empty() {
+                    return Transition::default();
+                }
+                let mut snoozes = self.state.snoozed.clone();
+                snoozes.retain(|_, until| *until > at);
                 Transition {
-                    changed,
-                    effects: changed
-                        .then_some(Effect::PersistSnoozes)
-                        .into_iter()
-                        .collect(),
+                    changed: false,
+                    effects: vec![Effect::PersistSnoozes {
+                        snoozes,
+                        action: SnoozeAction::Expire { keys },
+                    }],
                 }
             }
         }

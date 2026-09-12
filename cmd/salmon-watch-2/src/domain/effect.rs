@@ -1,3 +1,19 @@
+use std::collections::BTreeMap;
+
+/// Reason for a proposed snooze-map write.
+///
+/// Runtime uses this metadata for success logging and to distinguish explicit
+/// user failures from automatic expiration cleanup.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SnoozeAction {
+    /// Add or replace one deadline.
+    Set { key: String, until: i64 },
+    /// Remove one deadline at the user's request.
+    Remove { key: String },
+    /// Remove deadlines that have passed; keys are retained for useful logs.
+    Expire { keys: Vec<String> },
+}
+
 /// Side effects requested by a pure domain transition and executed by runtime code.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Effect {
@@ -8,8 +24,13 @@ pub enum Effect {
         /// Optional incident details; empty for resolution notifications.
         body: String,
     },
-    /// Writes the reducer's complete snooze map to persistent storage.
-    PersistSnoozes,
+    /// Writes a proposed complete map before committing it to live state.
+    PersistSnoozes {
+        /// Exact replacement map to persist and, on success, commit.
+        snoozes: BTreeMap<String, i64>,
+        /// Operation metadata not encoded by the replacement map itself.
+        action: SnoozeAction,
+    },
 }
 
 /// Outcome of reducing one event.
@@ -17,6 +38,6 @@ pub enum Effect {
 pub struct Transition {
     /// Whether consumers need a fresh [`super::UiSnapshot`].
     pub changed: bool,
-    /// Ordered effects to perform after the state mutation is complete.
+    /// Ordered effects to perform according to each variant's commit contract.
     pub effects: Vec<Effect>,
 }
