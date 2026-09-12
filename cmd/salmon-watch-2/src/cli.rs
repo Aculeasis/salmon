@@ -17,6 +17,7 @@ pub struct Options {
     pub config: Option<PathBuf>,
     pub command: Command,
     pub help: bool,
+    pub version: bool,
 }
 
 /// Mutually exclusive top-level mode selected from argv.
@@ -86,6 +87,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options> {
                 break;
             }
             Some("-h" | "--help") => options.help = true,
+            Some("-V" | "--version") => options.version = true,
             Some(arg) => anyhow::bail!("unknown argument {arg:?}"),
             None => anyhow::bail!("arguments must be valid UTF-8"),
         }
@@ -217,6 +219,12 @@ mod tests {
         assert!(options.start_hidden);
         assert_eq!(options.scale, Some(1.25));
         assert_eq!(options.log_level, Some(LogLevel::Debug));
+    }
+
+    #[test]
+    fn parses_short_and_long_version_flags() {
+        assert!(parse(["--version".into()]).unwrap().version);
+        assert!(parse(["-V".into()]).unwrap().version);
     }
 
     #[test]

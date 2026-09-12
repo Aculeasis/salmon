@@ -9,6 +9,8 @@
 pub mod app;
 /// Secure bearer credential generation and operator instructions.
 pub mod bearer_token;
+/// Compile-time version and build provenance.
+pub mod build_info;
 /// Side-effect-free command-line parsing.
 pub mod cli;
 /// YAML schema and cross-field validation.

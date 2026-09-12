@@ -51,14 +51,22 @@ salmon-watch: generate
 .PHONY: salmon-watch-2
 salmon-watch-2:
 	@echo Building bin/salmon-watch-2$(GOEXE)
-	@cargo build --release --manifest-path cmd/salmon-watch-2/Cargo.toml
+	@SALMON_WATCH_BUILD_VERSION='$(patsubst v%,%,$(VERSION))' \
+		SALMON_WATCH_BUILD_COMMIT='$(COMMIT)' \
+		SALMON_WATCH_BUILD_DATE='$(DATE)' \
+		SALMON_WATCH_BUILT_BY='make' \
+		cargo build --release --manifest-path cmd/salmon-watch-2/Cargo.toml
 	@mkdir -p bin
 	@cp cmd/salmon-watch-2/target/release/salmon-watch$(GOEXE) bin/salmon-watch-2$(GOEXE)
 
 .PHONY: salmon-watch-2-debug
 salmon-watch-2-debug:
 	@echo Building bin/salmon-watch-2-debug$(GOEXE)
-	@cargo build --manifest-path cmd/salmon-watch-2/Cargo.toml
+	@SALMON_WATCH_BUILD_VERSION='$(patsubst v%,%,$(VERSION))' \
+		SALMON_WATCH_BUILD_COMMIT='$(COMMIT)' \
+		SALMON_WATCH_BUILD_DATE='$(DATE)' \
+		SALMON_WATCH_BUILT_BY='make' \
+		cargo build --manifest-path cmd/salmon-watch-2/Cargo.toml
 	@mkdir -p bin
 	@cp cmd/salmon-watch-2/target/debug/salmon-watch$(GOEXE) bin/salmon-watch-2-debug$(GOEXE)
 
