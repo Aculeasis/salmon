@@ -132,7 +132,11 @@ fn snooze_failure_notification(action: &SnoozeAction, details: &str) -> Option<(
     };
     Some((
         title,
-        format!("The snooze state was not changed.\n\n{details}"),
+        format!(
+            r#"The snooze state was not changed.
+
+{details}"#
+        ),
     ))
 }
 
@@ -510,7 +514,12 @@ mod tests {
         let lines = logs.lines(&notification(
             "home",
             vec![
-                incident("disk", IncidentState::Error, "filesystem\nfull"),
+                incident(
+                    "disk",
+                    IncidentState::Error,
+                    r#"filesystem
+full"#,
+                ),
                 incident("backup", IncidentState::Warning, "late"),
             ],
             Vec::new(),

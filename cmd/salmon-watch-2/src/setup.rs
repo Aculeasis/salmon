@@ -178,13 +178,18 @@ fn execute_with(
     if legacy_installation {
         writeln!(
             output,
-            "\nNOTE: detected desktop integration from the older web-based salmon-watch.\nRun this setup command again with --reinstall to replace the old files. The configuration will not be overwritten."
+            r#"
+NOTE: detected desktop integration from the older web-based salmon-watch.
+Run this setup command again with --reinstall to replace the old files. The configuration will not be overwritten."#
         )?;
     }
     if operation == SetupOperation::Complete {
         writeln!(
             output,
-            "\nSalmon Watch is configured and installed for desktop autostart and application-menu launch. To start it now, run:\n\n    {}",
+            r#"
+Salmon Watch is configured and installed for desktop autostart and application-menu launch. To start it now, run:
+
+    {}"#,
             start_command(&executable, config_filename.as_path())?
         )?;
     }
@@ -576,7 +581,11 @@ mod tests {
     fn normal_setup_preserves_every_existing_file() {
         let layout = TestLayout::new();
         layout.run(SetupOperation::Complete, false);
-        let custom_config = "wsClient:\n  servers:\n    - id: custom\n      addr: localhost:1234\n";
+        let custom_config = r#"wsClient:
+  servers:
+    - id: custom
+      addr: localhost:1234
+"#;
         fs::write(&layout.config, custom_config).unwrap();
         fs::write(&layout.paths.autostart, "custom autostart").unwrap();
         fs::write(&layout.paths.launcher, "custom launcher").unwrap();
@@ -673,7 +682,11 @@ mod tests {
     fn reinstall_backs_up_and_replaces_desktop_files_but_not_config() {
         let layout = TestLayout::new();
         layout.run(SetupOperation::Complete, false);
-        let custom_config = "wsClient:\n  servers:\n    - id: custom\n      addr: localhost:1234\n";
+        let custom_config = r#"wsClient:
+  servers:
+    - id: custom
+      addr: localhost:1234
+"#;
         fs::write(&layout.config, custom_config).unwrap();
         fs::write(&layout.paths.autostart, "old autostart").unwrap();
         fs::write(&layout.paths.launcher, "old launcher").unwrap();

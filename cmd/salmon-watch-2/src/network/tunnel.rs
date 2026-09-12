@@ -401,7 +401,11 @@ async fn failure_details(
         log::warn!(
             "server {server_id} tunnel output pipes remained open after command exit; continuing restart"
         );
-        details.push_str("\n\nTunnel output pipes remained open after the command exited");
+        details.push_str(
+            r#"
+
+Tunnel output pipes remained open after the command exited"#,
+        );
     }
     let failure_output = failure_output(
         &output.stderr.text(),
@@ -501,9 +505,13 @@ where
                 }
             }
             Err(error) => {
-                output
-                    .tail
-                    .push(format!("\nreading tunnel output failed: {error}").as_bytes());
+                output.tail.push(
+                    format!(
+                        r#"
+reading tunnel output failed: {error}"#
+                    )
+                    .as_bytes(),
+                );
                 break;
             }
         }
@@ -753,14 +761,20 @@ mod tests {
     fn failure_output_prefers_stderr_and_removes_protocol_marker() {
         assert_eq!(
             failure_output(
-                "SALMON_TUNNEL_READY\nssh failed",
+                r#"SALMON_TUNNEL_READY
+ssh failed"#,
                 "less useful",
                 Some(READY_MARKER)
             ),
             "ssh failed"
         );
         assert_eq!(
-            failure_output("", "SALMON_TUNNEL_READY\nstdout failed", Some(READY_MARKER)),
+            failure_output(
+                "",
+                r#"SALMON_TUNNEL_READY
+stdout failed"#,
+                Some(READY_MARKER),
+            ),
             "stdout failed"
         );
         assert_eq!(

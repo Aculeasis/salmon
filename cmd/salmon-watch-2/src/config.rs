@@ -267,8 +267,14 @@ mod tests {
 
     #[test]
     fn accepts_plain_servers() {
-        let config =
-            parse("wsClient:\n  servers:\n    - id: local\n      addr: localhost:41990\n").unwrap();
+        let config = parse(
+            r#"wsClient:
+  servers:
+    - id: local
+      addr: localhost:41990
+"#,
+        )
+        .unwrap();
         assert_eq!(config.ws_client.servers[0].id, "local");
         assert!(config.ws_client.servers[0].tunnel.is_none());
         assert!(config.ws_client.servers[0].tls.is_none());
@@ -293,7 +299,16 @@ mod tests {
     #[test]
     fn accepts_tls_and_bearer_auth() {
         let config = parse(
-            "wsClient:\n  servers:\n    - id: remote\n      addr: 127.0.0.1:41990\n      tls:\n        caFile: /etc/salmon/ca.pem\n        serverName: salmon.example.com\n      auth:\n        bearerTokenFile: /etc/salmon/remote.token\n",
+            r#"wsClient:
+  servers:
+    - id: remote
+      addr: 127.0.0.1:41990
+      tls:
+        caFile: /etc/salmon/ca.pem
+        serverName: salmon.example.com
+      auth:
+        bearerTokenFile: /etc/salmon/remote.token
+"#,
         )
         .unwrap();
         let server = &config.ws_client.servers[0];
@@ -306,7 +321,12 @@ mod tests {
         );
 
         let empty_tls = parse(
-            "wsClient:\n  servers:\n    - id: remote\n      addr: salmon.example.com:41990\n      tls: {}\n",
+            r#"wsClient:
+  servers:
+    - id: remote
+      addr: salmon.example.com:41990
+      tls: {}
+"#,
         )
         .unwrap();
         assert!(empty_tls.ws_client.servers[0].tls.is_some());
@@ -315,7 +335,18 @@ mod tests {
     #[test]
     fn accepts_ssh_tunnel() {
         let config = parse(
-            "wsClient:\n  servers:\n    - id: remote\n      addr: 127.0.0.1:42990\n      tunnel:\n        ssh:\n          host: salmon.example.com\n          user: monitor\n          port: 2222\n          remoteSalmonAddr: 127.0.0.1:41990\n          extraSshArgs: ['-i', '/tmp/key']\n",
+            r#"wsClient:
+  servers:
+    - id: remote
+      addr: 127.0.0.1:42990
+      tunnel:
+        ssh:
+          host: salmon.example.com
+          user: monitor
+          port: 2222
+          remoteSalmonAddr: 127.0.0.1:41990
+          extraSshArgs: ['-i', '/tmp/key']
+"#,
         )
         .unwrap();
         let ssh = config.ws_client.servers[0]
@@ -406,7 +437,11 @@ mod tests {
           command: [tunnel]
 "#,
         ] {
-            assert!(parse(yaml).is_err(), "accepted invalid tunnel:\n{yaml}");
+            assert!(
+                parse(yaml).is_err(),
+                r#"accepted invalid tunnel:
+{yaml}"#
+            );
         }
     }
 
@@ -442,7 +477,8 @@ mod tests {
         ] {
             assert!(
                 parse(yaml).is_err(),
-                "accepted invalid custom command:\n{yaml}"
+                r#"accepted invalid custom command:
+{yaml}"#
             );
         }
     }
@@ -451,7 +487,12 @@ mod tests {
     fn rejects_missing_bearer_token_file() {
         for auth in ["{}", "{ bearerTokenFile: '' }"] {
             let yaml = format!(
-                "wsClient:\n  servers:\n    - id: remote\n      addr: localhost:41990\n      auth: {auth}\n"
+                r#"wsClient:
+  servers:
+    - id: remote
+      addr: localhost:41990
+      auth: {auth}
+"#
             );
             assert!(parse(&yaml).is_err(), "accepted invalid auth: {auth}");
         }
@@ -460,29 +501,71 @@ mod tests {
     #[test]
     fn rejects_invalid_ssh_tunnels() {
         for ssh in [
-            "host: ''\n          user: user\n          remoteSalmonAddr: localhost:41990",
-            "host: -option\n          user: user\n          remoteSalmonAddr: localhost:41990",
-            "host: host\n          user: ''\n          remoteSalmonAddr: localhost:41990",
-            "host: host\n          user: -option\n          remoteSalmonAddr: localhost:41990",
-            "host: host\n          user: user\n          remoteSalmonAddr: missing-port",
-            "host: host\n          user: user\n          remoteSalmonAddr: localhost:0",
+            r#"host: ''
+          user: user
+          remoteSalmonAddr: localhost:41990"#,
+            r#"host: -option
+          user: user
+          remoteSalmonAddr: localhost:41990"#,
+            r#"host: host
+          user: ''
+          remoteSalmonAddr: localhost:41990"#,
+            r#"host: host
+          user: -option
+          remoteSalmonAddr: localhost:41990"#,
+            r#"host: host
+          user: user
+          remoteSalmonAddr: missing-port"#,
+            r#"host: host
+          user: user
+          remoteSalmonAddr: localhost:0"#,
         ] {
             let yaml = format!(
-                "wsClient:\n  servers:\n    - id: remote\n      addr: localhost:42990\n      tunnel:\n        ssh:\n          {ssh}\n"
+                r#"wsClient:
+  servers:
+    - id: remote
+      addr: localhost:42990
+      tunnel:
+        ssh:
+          {ssh}
+"#
             );
-            assert!(parse(&yaml).is_err(), "accepted invalid SSH config:\n{ssh}");
+            assert!(
+                parse(&yaml).is_err(),
+                r#"accepted invalid SSH config:
+{ssh}"#
+            );
         }
 
-        let non_loopback = "wsClient:\n  servers:\n    - id: remote\n      addr: example.com:42990\n      tunnel:\n        ssh:\n          host: host\n          user: user\n          remoteSalmonAddr: localhost:41990\n";
+        let non_loopback = r#"wsClient:
+  servers:
+    - id: remote
+      addr: example.com:42990
+      tunnel:
+        ssh:
+          host: host
+          user: user
+          remoteSalmonAddr: localhost:41990
+"#;
         assert!(parse(non_loopback).is_err());
     }
 
     #[test]
     fn rejects_invalid_duplicate_and_reserved_ids() {
         for yaml in [
-            "wsClient:\n  servers:\n    - { id: 'bad.id', addr: localhost:1 }\n",
-            "wsClient:\n  servers:\n    - { id: internal, addr: localhost:1 }\n",
-            "wsClient:\n  servers:\n    - { id: same, addr: localhost:1 }\n    - { id: same, addr: localhost:2 }\n",
+            r#"wsClient:
+  servers:
+    - { id: 'bad.id', addr: localhost:1 }
+"#,
+            r#"wsClient:
+  servers:
+    - { id: internal, addr: localhost:1 }
+"#,
+            r#"wsClient:
+  servers:
+    - { id: same, addr: localhost:1 }
+    - { id: same, addr: localhost:2 }
+"#,
         ] {
             assert!(parse(yaml).is_err());
         }

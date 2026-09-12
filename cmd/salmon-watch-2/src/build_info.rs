@@ -20,7 +20,14 @@ fn format_description(
     target: &str,
 ) -> String {
     format!(
-        "Salmon Watch {version}\nCommit: {commit}\nBuild time: {date}\nBuilt by: {built_by}\nTarget: {target}\n\nWritten by Dmitry Frank (https://dmitryfrank.com)\n"
+        r#"Salmon Watch {version}
+Commit: {commit}
+Build time: {date}
+Built by: {built_by}
+Target: {target}
+
+Written by Dmitry Frank (https://dmitryfrank.com)
+"#
     )
 }
 
@@ -38,13 +45,14 @@ mod tests {
                 "make",
                 "x86_64-unknown-linux-gnu",
             ),
-            "Salmon Watch 2.0.0\n\
-             Commit: 0123456789abcdef\n\
-             Build time: 2026-09-12T10:20:30Z\n\
-             Built by: make\n\
-             Target: x86_64-unknown-linux-gnu\n\
-             \n\
-             Written by Dmitry Frank (https://dmitryfrank.com)\n"
+            r#"Salmon Watch 2.0.0
+Commit: 0123456789abcdef
+Build time: 2026-09-12T10:20:30Z
+Built by: make
+Target: x86_64-unknown-linux-gnu
+
+Written by Dmitry Frank (https://dmitryfrank.com)
+"#
         );
     }
 }

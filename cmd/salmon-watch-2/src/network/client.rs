@@ -565,7 +565,12 @@ mod tests {
         for (name, contents, expected) in [
             ("empty", " \n\t", "is empty"),
             ("space", "two tokens", "contains whitespace inside"),
-            ("newline", "two\ntokens", "contains whitespace inside"),
+            (
+                "newline",
+                r#"two
+tokens"#,
+                "contains whitespace inside",
+            ),
         ] {
             let filename = directory.path().join(name);
             fs::write(&filename, contents).unwrap();

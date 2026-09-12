@@ -56,7 +56,34 @@ pub fn generate(
 
     writeln!(
         output,
-        "Created bearer token file:\n\n    {}\n\nIn {}, find:\n\nwsClient:\n  servers:\n    - id: {}\n\nAnd add this block inside that server entry, alongside id and addr:\n\n      auth:\n        bearerTokenFile: {}\n\nIn the corresponding Salmon's configuration, find:\n\ncore:\n  messengers:\n    - webserver:\n\nAnd add this block inside the webserver messenger, alongside listenAddress:\n\n        auth:\n          - id: my-laptop # Identifies this credential; adjust as needed.\n            bearerTokenHash: \"sha256:{}\"\n\nIf auth already exists in the webserver messenger, add only the new list entry to it.",
+        r#"Created bearer token file:
+
+    {}
+
+In {}, find:
+
+wsClient:
+  servers:
+    - id: {}
+
+And add this block inside that server entry, alongside id and addr:
+
+      auth:
+        bearerTokenFile: {}
+
+In the corresponding Salmon's configuration, find:
+
+core:
+  messengers:
+    - webserver:
+
+And add this block inside the webserver messenger, alongside listenAddress:
+
+        auth:
+          - id: my-laptop # Identifies this credential; adjust as needed.
+            bearerTokenHash: "sha256:{}"
+
+If auth already exists in the webserver messenger, add only the new list entry to it."#,
         output_filename.display(),
         config_filename.display(),
         server_id,
@@ -153,7 +180,35 @@ mod tests {
             .collect::<String>();
         let output = String::from_utf8(output).unwrap();
         let expected = format!(
-            "Created bearer token file:\n\n    {}\n\nIn {}, find:\n\nwsClient:\n  servers:\n    - id: my-server\n\nAnd add this block inside that server entry, alongside id and addr:\n\n      auth:\n        bearerTokenFile: {:?}\n\nIn the corresponding Salmon's configuration, find:\n\ncore:\n  messengers:\n    - webserver:\n\nAnd add this block inside the webserver messenger, alongside listenAddress:\n\n        auth:\n          - id: my-laptop # Identifies this credential; adjust as needed.\n            bearerTokenHash: \"sha256:{}\"\n\nIf auth already exists in the webserver messenger, add only the new list entry to it.\n",
+            r#"Created bearer token file:
+
+    {}
+
+In {}, find:
+
+wsClient:
+  servers:
+    - id: my-server
+
+And add this block inside that server entry, alongside id and addr:
+
+      auth:
+        bearerTokenFile: {:?}
+
+In the corresponding Salmon's configuration, find:
+
+core:
+  messengers:
+    - webserver:
+
+And add this block inside the webserver messenger, alongside listenAddress:
+
+        auth:
+          - id: my-laptop # Identifies this credential; adjust as needed.
+            bearerTokenHash: "sha256:{}"
+
+If auth already exists in the webserver messenger, add only the new list entry to it.
+"#,
             token_filename.display(),
             std::path::absolute(&config).unwrap().display(),
             token_filename.to_string_lossy(),
