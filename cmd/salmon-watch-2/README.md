@@ -5,15 +5,6 @@ Salmon Watch 2 reads the existing Salmon Watch configuration from
 `~/.config/salmon-watch/salmon-watch.yml`). A custom file can be selected with
 `--config`.
 
-The current implementation supports direct, unencrypted WebSocket connections:
-
-```yaml
-wsClient:
-  servers:
-    - id: local
-      addr: localhost:41990
-```
-
 ## Testing
 
 Run the regular test suite with:
