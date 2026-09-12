@@ -98,7 +98,7 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
         Rc::new(DesktopNotificationSink),
         geometry.clone(),
     );
-    install_ctrl_c_handler(&tray)?;
+    install_termination_handler(&tray)?;
 
     let icons = Arc::new(TrayIcons::load()?);
     let flash = TrayFlashController::default();
@@ -369,20 +369,20 @@ fn tray_toggle_action(visible: bool, focused: bool) -> TrayToggleAction {
     }
 }
 
-/// Marshals the signal-handler callback onto the Slint event loop.
+/// Marshals SIGINT, SIGTERM, and SIGHUP onto the Slint event loop.
 ///
 /// The ctrlc crate invokes handlers on its own thread, where touching Slint
 /// components directly would violate their thread affinity.
-fn install_ctrl_c_handler(tray: &SalmonTray) -> Result<()> {
+fn install_termination_handler(tray: &SalmonTray) -> Result<()> {
     let tray_weak = tray.as_weak();
     ctrlc::set_handler(move || {
-        log::info!("received Ctrl+C; shutting down");
+        log::info!("received termination signal; shutting down");
         let tray_weak = tray_weak.clone();
         if let Err(error) = tray_weak.upgrade_in_event_loop(|tray| tray.invoke_exit()) {
-            log::error!("failed to request shutdown after Ctrl+C: {error}");
+            log::error!("failed to request shutdown after termination signal: {error}");
         }
     })
-    .context("failed to install Ctrl+C handler")
+    .context("failed to install termination signal handler")
 }
 
 /// Schedules one generation-tagged flash edge and recursively schedules the next.
