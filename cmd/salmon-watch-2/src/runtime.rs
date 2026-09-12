@@ -5,6 +5,7 @@ use std::thread::{self, JoinHandle};
 use anyhow::{Context, Result};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
+use tokio::time::Instant;
 
 use crate::config::Config;
 use crate::domain::{
@@ -19,6 +20,8 @@ type Publisher = Arc<dyn Fn(UiSnapshot) + Send + Sync>;
 type SnoozePersister = Arc<dyn Fn(&BTreeMap<String, i64>) -> Result<()> + Send + Sync>;
 
 const MAX_LOG_DETAILS_CHARS: usize = 1_000;
+/// Minimum delay between failed automatic snooze-expiration writes.
+const EXPIRY_PERSISTENCE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// One deferred structured log record derived from a domain event.
 #[derive(Debug, Eq, PartialEq)]
@@ -142,6 +145,16 @@ fn enqueue_desktop_notification(
     if let Some(dispatcher) = notifications {
         dispatcher.enqueue(title, body);
     }
+}
+
+/// Applies the retry cooldown only to automatic expiration cleanup.
+fn snooze_persistence_is_due(
+    action: &SnoozeAction,
+    expiry_retry_not_before: Option<Instant>,
+    now: Instant,
+) -> bool {
+    !matches!(action, SnoozeAction::Expire { .. })
+        || expiry_retry_not_before.is_none_or(|deadline| now >= deadline)
 }
 
 fn incident_line(server_id: &str, action: &str, incident: &Incident) -> String {
@@ -298,9 +311,9 @@ fn run(
 /// The one-second tick republishes even without a mutation so relative timestamps
 /// advance. Snooze writes are awaited and acknowledged before reducer commit;
 /// failed explicit actions notify the user, while failed expiry cleanup is
-/// proposed again by the next tick. Desktop notifications pass through one
-/// bounded, nonblocking FIFO so a slow notification daemon cannot stall network
-/// processing or create an unbounded number of blocking jobs.
+/// proposed every tick but attempted at most once per retry interval. Desktop
+/// notifications pass through one bounded, nonblocking FIFO so a slow notification
+/// daemon cannot stall network processing or create unbounded blocking jobs.
 async fn run_async(
     config: Config,
     snoozes: BTreeMap<String, i64>,
@@ -324,6 +337,7 @@ async fn run_async(
         .collect();
     let mut reducer = Reducer::new(AppState::new(ids, snoozes));
     let mut event_logs = EventLogState::default();
+    let mut expiry_retry_not_before = None;
     let (events_tx, mut events_rx) = mpsc::channel(64);
     let mut network_tasks = JoinSet::new();
     for server in config.ws_client.servers {
@@ -358,11 +372,17 @@ async fn run_async(
                     enqueue_desktop_notification(&mut notifications, title, body);
                 }
                 Effect::PersistSnoozes { snoozes, action } => {
+                    if !snooze_persistence_is_due(&action, expiry_retry_not_before, Instant::now())
+                    {
+                        continue;
+                    }
+                    let automatic_expiry = matches!(&action, SnoozeAction::Expire { .. });
                     let persist = persist.clone();
                     match tokio::task::spawn_blocking(move || persist(&snoozes).map(|()| snoozes))
                         .await
                     {
                         Ok(Ok(snoozes)) => {
+                            expiry_retry_not_before = None;
                             for line in snooze_success_lines(&action) {
                                 log::log!(line.level, "{}", line.message);
                             }
@@ -371,6 +391,10 @@ async fn run_async(
                             changed |= committed.changed;
                         }
                         Ok(Err(error)) => {
+                            if automatic_expiry {
+                                expiry_retry_not_before =
+                                    Some(Instant::now() + EXPIRY_PERSISTENCE_RETRY_DELAY);
+                            }
                             let details = format!("{error:#}");
                             log::error!("failed to persist snoozes: {details}");
                             if let Some((title, body)) =
@@ -380,6 +404,10 @@ async fn run_async(
                             }
                         }
                         Err(error) => {
+                            if automatic_expiry {
+                                expiry_retry_not_before =
+                                    Some(Instant::now() + EXPIRY_PERSISTENCE_RETRY_DELAY);
+                            }
                             let details = format!("snooze persistence worker failed: {error}");
                             log::error!("{details}");
                             if let Some((title, body)) =
@@ -627,5 +655,27 @@ mod tests {
             ]
         );
         assert!(snooze_failure_notification(&expire, "read-only").is_none());
+    }
+
+    #[test]
+    fn automatic_expiration_obeys_retry_cooldown_but_user_actions_do_not() {
+        let now = Instant::now();
+        let retry_at = now + EXPIRY_PERSISTENCE_RETRY_DELAY;
+        let expire = SnoozeAction::Expire {
+            keys: vec!["home.disk".into()],
+        };
+        let set = SnoozeAction::Set {
+            key: "home.disk".into(),
+            until: 100,
+        };
+        let remove = SnoozeAction::Remove {
+            key: "home.disk".into(),
+        };
+
+        assert!(snooze_persistence_is_due(&expire, None, now));
+        assert!(!snooze_persistence_is_due(&expire, Some(retry_at), now));
+        assert!(snooze_persistence_is_due(&expire, Some(retry_at), retry_at));
+        assert!(snooze_persistence_is_due(&set, Some(retry_at), now));
+        assert!(snooze_persistence_is_due(&remove, Some(retry_at), now));
     }
 }
