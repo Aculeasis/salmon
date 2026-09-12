@@ -231,22 +231,13 @@ component IncidentCard inherits VerticalLayout {
     spacing: 8px;
     property <brush> text-color: incident.stale ? root.stale-color : root.foreground-color;
 
-    HorizontalLayout {
-        spacing: 8px;
-        alignment: start;
-        Image {
-            source: root.incident.severity == 4
-                ? @image-url("../assets/tray/magenta.png")
-                : root.incident.severity == 3
-                    ? @image-url("../assets/tray/red.png")
-                    : root.incident.severity == 1
-                        ? @image-url("../assets/tray/green.png")
-                        : @image-url("../assets/tray/yellow.png");
-            width: 20px;
-            height: 20px;
-            image-fit: contain;
-        }
-        VerticalLayout {
+    Rectangle {
+        min-height: fields.preferred-height;
+        preferred-height: fields.preferred-height;
+        max-height: fields.preferred-height;
+
+        fields := VerticalLayout {
+            width: parent.width;
             spacing: 4px;
             FieldRow { label: "key"; value: root.incident.key; foreground: root.text-color; }
             FieldRow { label: "state"; value: root.incident.state; foreground: root.text-color; }
@@ -257,6 +248,21 @@ component IncidentCard inherits VerticalLayout {
                 value: root.incident.snoozed-until;
                 foreground: root.text-color;
             }
+        }
+
+        Image {
+            x: 0px;
+            y: 0px;
+            source: root.incident.severity == 4
+                ? @image-url("../assets/tray/magenta.png")
+                : root.incident.severity == 3
+                    ? @image-url("../assets/tray/red.png")
+                    : root.incident.severity == 1
+                        ? @image-url("../assets/tray/green.png")
+                        : @image-url("../assets/tray/yellow.png");
+            width: 20px;
+            height: 20px;
+            image-fit: contain;
         }
     }
 
