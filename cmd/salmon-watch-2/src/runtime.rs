@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result};
+use time::OffsetDateTime;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -17,7 +18,7 @@ use crate::notification::NotificationDispatcher;
 /// Thread-safe handoff from the reducer thread to the Slint event loop.
 type Publisher = Arc<dyn Fn(UiSnapshot) + Send + Sync>;
 /// Blocking persistence callback, executed through Tokio's blocking pool.
-type SnoozePersister = Arc<dyn Fn(&BTreeMap<String, i64>) -> Result<()> + Send + Sync>;
+type SnoozePersister = Arc<dyn Fn(&BTreeMap<String, OffsetDateTime>) -> Result<()> + Send + Sync>;
 
 const MAX_LOG_DETAILS_CHARS: usize = 1_000;
 /// Minimum delay between failed automatic snooze-expiration writes.
@@ -111,9 +112,10 @@ fn info(message: String) -> EventLogLine {
 /// Produces success logs only after the proposed snooze map is durable.
 fn snooze_success_lines(action: &SnoozeAction) -> Vec<EventLogLine> {
     match action {
-        SnoozeAction::Set { key, until } => {
-            vec![info(format!("snoozed incident {key} until {until}"))]
-        }
+        SnoozeAction::Set { key, until } => vec![info(format!(
+            "snoozed incident {key} until {}",
+            until.unix_timestamp()
+        ))],
         SnoozeAction::Remove { key } => vec![info(format!("unsnoozed incident {key}"))],
         SnoozeAction::Expire { keys } => keys
             .iter()
@@ -241,7 +243,7 @@ impl RuntimeHandle {
     /// than allowing an outage or update burst to grow memory without limit.
     pub fn start(
         config: Config,
-        snoozes: BTreeMap<String, i64>,
+        snoozes: BTreeMap<String, OffsetDateTime>,
         publish: Publisher,
         persist: SnoozePersister,
     ) -> Result<Self> {
@@ -284,7 +286,7 @@ impl Drop for RuntimeHandle {
 /// Builds and drives Tokio on the already-created runtime OS thread.
 fn run(
     config: Config,
-    snoozes: BTreeMap<String, i64>,
+    snoozes: BTreeMap<String, OffsetDateTime>,
     publish: Publisher,
     persist: SnoozePersister,
     commands: mpsc::Receiver<Command>,
@@ -320,7 +322,7 @@ fn run(
 /// daemon cannot stall network processing or create unbounded blocking jobs.
 async fn run_async(
     config: Config,
-    snoozes: BTreeMap<String, i64>,
+    snoozes: BTreeMap<String, OffsetDateTime>,
     publish: Publisher,
     persist: SnoozePersister,
     mut commands: mpsc::Receiver<Command>,
@@ -351,13 +353,13 @@ async fn run_async(
             shutdown.clone(),
         ));
     }
-    (publish)(reducer.state().snapshot(unix_now()));
+    (publish)(reducer.state().snapshot(wall_clock_now()));
     let mut ticks = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         let event = tokio::select! {
             Some(event) = events_rx.recv() => event,
             Some(command) = commands.recv() => command_event(command),
-            _ = ticks.tick() => Event::Tick { at: unix_now() },
+            _ = ticks.tick() => Event::Tick { at: wall_clock_now() },
             _ = shutdown.changed() => {
                 log::info!("stopping network services");
                 break;
@@ -425,7 +427,7 @@ async fn run_async(
             }
         }
         if changed || refresh {
-            (publish)(reducer.state().snapshot(unix_now()));
+            (publish)(reducer.state().snapshot(wall_clock_now()));
         }
     }
 
@@ -454,25 +456,26 @@ fn command_event(command: Command) -> Event {
     match command {
         Command::Snooze { key, seconds } => Event::Snooze {
             key,
-            until: unix_now().saturating_add(seconds),
+            until: wall_clock_now().saturating_add(time::Duration::seconds(seconds)),
         },
         Command::Unsnooze { key } => Event::Unsnooze { key },
         Command::ForgetStale { key } => Event::ForgetStale { key },
     }
 }
 
-/// Returns Unix seconds, clamping pre-epoch/clock errors to zero.
-pub fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+/// Returns the current UTC wall-clock instant.
+fn wall_clock_now() -> OffsetDateTime {
+    OffsetDateTime::now_utc()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::NotificationData;
+
+    fn at(unix_seconds: i64) -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(unix_seconds).unwrap()
+    }
 
     fn incident(key: &str, state: IncidentState, details: &str) -> Incident {
         Incident {
@@ -500,7 +503,7 @@ mod tests {
                 updated,
                 num_items_ok: 7,
             },
-            at: 1,
+            at: at(1),
         }
     }
 
@@ -509,7 +512,7 @@ mod tests {
         let mut logs = EventLogState::default();
         logs.lines(&Event::Connected {
             server_id: "home".into(),
-            at: 1,
+            at: at(1),
         });
         let lines = logs.lines(&notification(
             "home",
@@ -584,7 +587,7 @@ full"#,
         assert_eq!(logs.lines(&snapshot()).len(), 1);
         logs.lines(&Event::Connected {
             server_id: "home".into(),
-            at: 2,
+            at: at(2),
         });
         let reconnected = logs.lines(&snapshot());
         assert_eq!(reconnected.len(), 2);
@@ -597,7 +600,7 @@ full"#,
         assert_eq!(
             logs.lines(&Event::Heartbeat {
                 server_id: "home".into(),
-                at: 1,
+                at: at(1),
             }),
             [EventLogLine {
                 level: log::Level::Debug,
@@ -622,7 +625,7 @@ full"#,
             event_logs
                 .lines(&Event::Snooze {
                     key: "home.disk".into(),
-                    until: 100,
+                    until: at(100),
                 })
                 .is_empty(),
             "a request must not be logged as successful before persistence"
@@ -630,7 +633,7 @@ full"#,
 
         let set = SnoozeAction::Set {
             key: "home.disk".into(),
-            until: 100,
+            until: at(100),
         };
         assert_eq!(
             snooze_success_lines(&set),
@@ -675,7 +678,7 @@ full"#,
         };
         let set = SnoozeAction::Set {
             key: "home.disk".into(),
-            until: 100,
+            until: at(100),
         };
         let remove = SnoozeAction::Remove {
             key: "home.disk".into(),

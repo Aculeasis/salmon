@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use rustls::{ClientConfig, RootCertStore};
+use time::OffsetDateTime;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{sleep, timeout};
@@ -162,7 +163,7 @@ async fn run_connection_loop_with_options(
             let _ = events
                 .send(Event::Disconnected {
                     server_id: server.id,
-                    at: unix_now(),
+                    at: wall_clock_now(),
                     error,
                 })
                 .await;
@@ -185,7 +186,7 @@ async fn run_connection_loop_with_options(
                 let _ = events
                     .send(Event::Disconnected {
                         server_id: server.id.clone(),
-                        at: unix_now(),
+                        at: wall_clock_now(),
                         error,
                     })
                     .await;
@@ -220,7 +221,7 @@ async fn run_connection_loop_with_options(
                 let _ = events
                     .send(Event::Disconnected {
                         server_id: server.id.clone(),
-                        at: unix_now(),
+                        at: wall_clock_now(),
                         error,
                     })
                     .await;
@@ -234,7 +235,7 @@ async fn run_connection_loop_with_options(
         if events
             .send(Event::Connected {
                 server_id: server.id.clone(),
-                at: unix_now(),
+                at: wall_clock_now(),
             })
             .await
             .is_err()
@@ -265,7 +266,7 @@ async fn run_connection_loop_with_options(
                     if events
                         .send(Event::Heartbeat {
                             server_id: server.id.clone(),
-                            at: unix_now(),
+                            at: wall_clock_now(),
                         })
                         .await
                         .is_err()
@@ -283,7 +284,7 @@ async fn run_connection_loop_with_options(
                                 .send(Event::Notification {
                                     server_id: server.id.clone(),
                                     data,
-                                    at: unix_now(),
+                                    at: wall_clock_now(),
                                 })
                                 .await
                                 .is_err()
@@ -306,7 +307,7 @@ async fn run_connection_loop_with_options(
                                 .send(Event::Notification {
                                     server_id: server.id.clone(),
                                     data,
-                                    at: unix_now(),
+                                    at: wall_clock_now(),
                                 })
                                 .await
                                 .is_err()
@@ -329,7 +330,7 @@ async fn run_connection_loop_with_options(
         let _ = events
             .send(Event::Disconnected {
                 server_id: server.id.clone(),
-                at: unix_now(),
+                at: wall_clock_now(),
                 error: disconnect_error,
             })
             .await;
@@ -487,11 +488,8 @@ async fn tunnel_stopped(shutdown: &mut watch::Receiver<bool>) -> bool {
     }
 }
 
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+fn wall_clock_now() -> OffsetDateTime {
+    OffsetDateTime::now_utc()
 }
 
 #[cfg(test)]

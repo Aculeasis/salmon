@@ -2,6 +2,7 @@ use std::io;
 use std::process::Stdio;
 use std::time::Duration;
 
+use time::OffsetDateTime;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch};
@@ -180,7 +181,7 @@ async fn run_with_spec(
                 if events
                     .send(Event::TunnelReady {
                         server_id: server.id.clone(),
-                        at: unix_now(),
+                        at: wall_clock_now(),
                     })
                     .await
                     .is_err()
@@ -376,7 +377,7 @@ async fn send_tunnel_failure(events: &mpsc::Sender<Event>, server_id: &str, erro
     events
         .send(Event::TunnelFailed {
             server_id: server_id.to_owned(),
-            at: unix_now(),
+            at: wall_clock_now(),
             error,
         })
         .await
@@ -619,11 +620,8 @@ fn failure_output(stderr: &str, stdout: &str, readiness_probe: Option<&str>) -> 
     }
 }
 
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+fn wall_clock_now() -> OffsetDateTime {
+    OffsetDateTime::now_utc()
 }
 
 #[cfg(test)]

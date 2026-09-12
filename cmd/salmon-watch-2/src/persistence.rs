@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use time::{OffsetDateTime, UtcOffset};
 
 const STATE_FILENAME: &str = ".salmon-watch-2-state.json";
 
@@ -78,27 +79,26 @@ impl Default for StateFile {
 }
 
 impl StateFile {
-    /// Decodes persisted RFC 3339 deadlines into reducer-native Unix seconds.
-    pub fn decoded_snoozes(&self) -> Result<BTreeMap<String, i64>> {
+    /// Decodes persisted RFC 3339 deadlines into UTC instants.
+    pub fn decoded_snoozes(&self) -> Result<BTreeMap<String, OffsetDateTime>> {
         self.snoozed
             .iter()
             .map(|(key, entry)| {
-                let until = time::OffsetDateTime::parse(
+                let parsed = OffsetDateTime::parse(
                     &entry.snoozed_until,
                     &time::format_description::well_known::Rfc3339,
                 )
                 .with_context(|| format!("invalid snooze deadline for {key:?}"))?;
-                Ok((key.clone(), until.unix_timestamp()))
+                Ok((key.clone(), parsed.to_offset(UtcOffset::UTC)))
             })
             .collect()
     }
 
     /// Reconciles snoozes while retaining unknown fields on entries that survive.
-    pub fn replace_snoozes(&mut self, snoozes: &BTreeMap<String, i64>) -> Result<()> {
+    pub fn replace_snoozes(&mut self, snoozes: &BTreeMap<String, OffsetDateTime>) -> Result<()> {
         self.snoozed.retain(|key, _| snoozes.contains_key(key));
         for (key, until) in snoozes {
-            let formatted = time::OffsetDateTime::from_unix_timestamp(*until)
-                .with_context(|| format!("invalid snooze deadline for {key:?}"))?
+            let formatted = until
                 .format(&time::format_description::well_known::Rfc3339)
                 .context("failed to format snooze deadline")?;
             match self.snoozed.get_mut(key) {
@@ -312,6 +312,24 @@ mod tests {
         assert_eq!(state.snoozed.len(), 1);
         assert_eq!(state.preferences.theme, Theme::Dark);
         assert_eq!(state.preferences.window_geometry, None);
+    }
+
+    #[test]
+    fn snooze_deadlines_round_trip_as_offset_datetimes() {
+        let deadline = OffsetDateTime::from_unix_timestamp(1_800_000_000)
+            .unwrap()
+            .replace_nanosecond(123_456_789)
+            .unwrap();
+        let expected = BTreeMap::from([("local.disk".to_owned(), deadline)]);
+        let mut state = StateFile::default();
+
+        state.replace_snoozes(&expected).unwrap();
+
+        assert_eq!(state.decoded_snoozes().unwrap(), expected);
+        assert_eq!(
+            state.snoozed["local.disk"].snoozed_until,
+            "2027-01-15T08:00:00.123456789Z"
+        );
     }
 
     #[test]

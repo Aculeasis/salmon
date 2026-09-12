@@ -1,4 +1,5 @@
 use super::{AppState, Effect, Event, Incident, IncidentState, SnoozeAction, Transition};
+use time::OffsetDateTime;
 
 /// Serial state machine for network events and user incident actions.
 ///
@@ -157,7 +158,7 @@ impl Reducer {
     /// Starts a fresh socket generation and resolves its connection incident.
     /// A previous heartbeat is cleared because it cannot prove the new socket
     /// has delivered any data.
-    fn connected(&mut self, id: &str, at: i64) -> Transition {
+    fn connected(&mut self, id: &str, at: OffsetDateTime) -> Transition {
         let incident_key = format!("internal.connection.{id}");
         let incident_is_snoozed = self.is_snoozed(&incident_key, at);
         let Some(server) = self.state.servers.get_mut(id) else {
@@ -191,7 +192,7 @@ impl Reducer {
 
     /// Marks cached server incidents stale while retaining them for context.
     /// Repeated failures update details but notify only on incident creation.
-    fn disconnected(&mut self, id: &str, at: i64, error: String) -> Transition {
+    fn disconnected(&mut self, id: &str, at: OffsetDateTime, error: String) -> Transition {
         let key = format!("internal.connection.{id}");
         let incident_is_snoozed = self.is_snoozed(&key, at);
         let Some(server) = self.state.servers.get_mut(id) else {
@@ -239,7 +240,7 @@ impl Reducer {
                             key,
                             state: IncidentState::Error,
                             details: error,
-                            incident_started_at: at.to_string(),
+                            incident_started_at: format_incident_time(at),
                             stale: false,
                         },
                     );
@@ -254,7 +255,7 @@ impl Reducer {
     }
 
     /// Resolves the tunnel incident only after SSH emitted its readiness marker.
-    fn tunnel_ready(&mut self, id: &str, at: i64) -> Transition {
+    fn tunnel_ready(&mut self, id: &str, at: OffsetDateTime) -> Transition {
         if !self.state.servers.contains_key(id) {
             return Transition::default();
         }
@@ -275,7 +276,7 @@ impl Reducer {
 
     /// Makes the tunnel the sole root-cause incident and removes a concurrent,
     /// derivative WebSocket connection failure for the same server.
-    fn tunnel_failed(&mut self, id: &str, at: i64, error: String) -> Transition {
+    fn tunnel_failed(&mut self, id: &str, at: OffsetDateTime, error: String) -> Transition {
         let key = format!("internal.tunnel.{id}");
         let incident_is_snoozed = self.is_snoozed(&key, at);
         let Some(server) = self.state.servers.get_mut(id) else {
@@ -325,7 +326,7 @@ impl Reducer {
                         key,
                         state: IncidentState::Error,
                         details: error,
-                        incident_started_at: at.to_string(),
+                        incident_started_at: format_incident_time(at),
                         stale: false,
                     },
                 );
@@ -338,7 +339,7 @@ impl Reducer {
         }
     }
 
-    fn heartbeat(&mut self, id: &str, at: i64) -> Transition {
+    fn heartbeat(&mut self, id: &str, at: OffsetDateTime) -> Transition {
         let Some(server) = self.state.servers.get_mut(id) else {
             return Transition::default();
         };
@@ -352,7 +353,7 @@ impl Reducer {
 
     /// Tests the deadline directly; expired entries may remain stored until the
     /// periodic expiry event removes and persists them.
-    fn is_snoozed(&self, key: &str, now: i64) -> bool {
+    fn is_snoozed(&self, key: &str, now: OffsetDateTime) -> bool {
         self.state
             .snoozed
             .get(key)
@@ -365,6 +366,12 @@ fn prefixed(item: &Incident, id: &str) -> Incident {
     let mut item = item.clone();
     item.key = format!("{id}.{}", item.key);
     item
+}
+
+/// Encodes locally generated incident times in the same RFC 3339 shape as wire incidents.
+fn format_incident_time(at: OffsetDateTime) -> String {
+    at.format(&time::format_description::well_known::Rfc3339)
+        .expect("a current UTC timestamp is representable as RFC 3339")
 }
 
 fn state_name(state: IncidentState) -> &'static str {

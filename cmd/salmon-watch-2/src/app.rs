@@ -120,9 +120,11 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
         }
     });
     let persist_store = store.clone();
-    let persist = Arc::new(move |snoozes: &std::collections::BTreeMap<String, i64>| {
-        persist_store.update(|state| state.replace_snoozes(snoozes))
-    });
+    let persist = Arc::new(
+        move |snoozes: &std::collections::BTreeMap<String, time::OffsetDateTime>| {
+            persist_store.update(|state| state.replace_snoozes(snoozes))
+        },
+    );
     let runtime = RuntimeHandle::start(config, snoozes, publish, persist)?;
     log::debug!("application runtime started");
     install_incident_actions(&window, runtime.commands());

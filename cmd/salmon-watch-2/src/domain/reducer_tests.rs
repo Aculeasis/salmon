@@ -1,7 +1,13 @@
 use std::collections::BTreeMap;
 
+use time::OffsetDateTime;
+
 use super::*;
 use crate::domain::{NotificationData, OverallState};
+
+fn at(unix_seconds: i64) -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp(unix_seconds).unwrap()
+}
 
 fn reducer(ids: &[&str]) -> Reducer {
     Reducer::new(AppState::new(
@@ -34,7 +40,7 @@ fn notify(r: &mut Reducer, server: &str, data: NotificationData, at: i64) -> Tra
     r.reduce(Event::Notification {
         server_id: server.into(),
         data,
-        at,
+        at: self::at(at),
     })
 }
 
@@ -55,7 +61,7 @@ fn commit_proposed_snoozes(r: &mut Reducer, transition: Transition) -> SnoozeAct
 #[test]
 fn starts_with_configured_servers_in_unknown_state() {
     let r = reducer(&["second", "first"]);
-    let snapshot = r.state().snapshot(0);
+    let snapshot = r.state().snapshot(at(0));
     assert_eq!(
         snapshot
             .servers
@@ -91,7 +97,7 @@ fn snapshot_prefixes_keys_and_replaces_only_its_server() {
     );
     let keys = r
         .state()
-        .snapshot(3)
+        .snapshot(at(3))
         .active
         .into_iter()
         .map(|i| i.key)
@@ -116,7 +122,7 @@ fn aggregation_order_is_configuration_order_not_arrival_order() {
     );
     let keys = r
         .state()
-        .snapshot(2)
+        .snapshot(at(2))
         .active
         .into_iter()
         .map(|i| i.key)
@@ -134,7 +140,7 @@ fn deltas_drive_notifications_but_total_drives_state() {
     data.updated
         .push(incident("ignored-update", IncidentState::Error));
     let transition = notify(&mut r, "local", data, 10);
-    assert_eq!(r.state().snapshot(10).active[0].key, "local.current");
+    assert_eq!(r.state().snapshot(at(10)).active[0].key, "local.current");
     assert_eq!(transition.effects.len(), 2);
     assert!(
         matches!(&transition.effects[0], Effect::Notify { title, .. } if title == "error: local.added")
@@ -149,7 +155,7 @@ fn snoozed_incident_appearance_resolution_and_reappearance_do_not_notify() {
     let mut r = reducer(&["local"]);
     let transition = r.reduce(Event::Snooze {
         key: "local.disk".into(),
-        until: 100,
+        until: at(100),
     });
     commit_proposed_snoozes(&mut r, transition);
 
@@ -165,7 +171,7 @@ fn snoozed_incident_appearance_resolution_and_reappearance_do_not_notify() {
     data.added.push(incident("disk", IncidentState::Error));
     assert!(notify(&mut r, "local", data, 30).effects.is_empty());
 
-    let snapshot = r.state().snapshot(30);
+    let snapshot = r.state().snapshot(at(30));
     assert!(snapshot.active.is_empty());
     assert_eq!(snapshot.snoozed[0].incident.key, "local.disk");
 }
@@ -175,14 +181,14 @@ fn snoozed_connection_incident_lifecycle_does_not_notify() {
     let mut r = reducer(&["local"]);
     let transition = r.reduce(Event::Snooze {
         key: "internal.connection.local".into(),
-        until: 100,
+        until: at(100),
     });
     commit_proposed_snoozes(&mut r, transition);
 
     assert!(
         r.reduce(Event::Disconnected {
             server_id: "local".into(),
-            at: 10,
+            at: at(10),
             error: "connection refused".into(),
         })
         .effects
@@ -191,7 +197,7 @@ fn snoozed_connection_incident_lifecycle_does_not_notify() {
     assert!(
         r.reduce(Event::Connected {
             server_id: "local".into(),
-            at: 20,
+            at: at(20),
         })
         .effects
         .is_empty()
@@ -199,14 +205,14 @@ fn snoozed_connection_incident_lifecycle_does_not_notify() {
     assert!(
         r.reduce(Event::Disconnected {
             server_id: "local".into(),
-            at: 30,
+            at: at(30),
             error: "connection refused again".into(),
         })
         .effects
         .is_empty()
     );
 
-    let snapshot = r.state().snapshot(30);
+    let snapshot = r.state().snapshot(at(30));
     assert!(snapshot.active.is_empty());
     assert_eq!(
         snapshot.snoozed[0].incident.key,
@@ -219,14 +225,14 @@ fn snoozed_tunnel_incident_lifecycle_does_not_notify() {
     let mut r = reducer(&["remote"]);
     let transition = r.reduce(Event::Snooze {
         key: "internal.tunnel.remote".into(),
-        until: 100,
+        until: at(100),
     });
     commit_proposed_snoozes(&mut r, transition);
 
     assert!(
         r.reduce(Event::TunnelFailed {
             server_id: "remote".into(),
-            at: 10,
+            at: at(10),
             error: "ssh exited".into(),
         })
         .effects
@@ -235,7 +241,7 @@ fn snoozed_tunnel_incident_lifecycle_does_not_notify() {
     assert!(
         r.reduce(Event::TunnelReady {
             server_id: "remote".into(),
-            at: 20,
+            at: at(20),
         })
         .effects
         .is_empty()
@@ -243,14 +249,14 @@ fn snoozed_tunnel_incident_lifecycle_does_not_notify() {
     assert!(
         r.reduce(Event::TunnelFailed {
             server_id: "remote".into(),
-            at: 30,
+            at: at(30),
             error: "ssh exited again".into(),
         })
         .effects
         .is_empty()
     );
 
-    let snapshot = r.state().snapshot(30);
+    let snapshot = r.state().snapshot(at(30));
     assert!(snapshot.active.is_empty());
     assert_eq!(snapshot.snoozed[0].incident.key, "internal.tunnel.remote");
 }
@@ -261,18 +267,18 @@ fn connection_lifecycle_and_heartbeat_are_recorded() {
     assert!(
         r.reduce(Event::Connected {
             server_id: "local".into(),
-            at: 10
+            at: at(10)
         })
         .changed
     );
     r.reduce(Event::Heartbeat {
         server_id: "local".into(),
-        at: 12,
+        at: at(12),
     });
-    let server = &r.state().snapshot(12).servers[0];
+    let server = &r.state().snapshot(at(12)).servers[0];
     assert!(server.connected && server.initialized);
-    assert_eq!(server.connection_changed_at, Some(10));
-    assert_eq!(server.last_heartbeat_at, Some(12));
+    assert_eq!(server.connection_changed_at, Some(at(10)));
+    assert_eq!(server.last_heartbeat_at, Some(at(12)));
 }
 
 #[test]
@@ -280,18 +286,18 @@ fn repeated_connection_state_is_idempotent() {
     let mut r = reducer(&["local"]);
     r.reduce(Event::Connected {
         server_id: "local".into(),
-        at: 10,
+        at: at(10),
     });
     assert!(
         !r.reduce(Event::Connected {
             server_id: "local".into(),
-            at: 20
+            at: at(20)
         })
         .changed
     );
     assert_eq!(
-        r.state().snapshot(20).servers[0].connection_changed_at,
-        Some(10)
+        r.state().snapshot(at(20)).servers[0].connection_changed_at,
+        Some(at(10))
     );
 }
 
@@ -312,10 +318,10 @@ fn disconnect_marks_only_source_incidents_stale() {
     );
     r.reduce(Event::Disconnected {
         server_id: "first".into(),
-        at: 2,
+        at: at(2),
         error: String::new(),
     });
-    let snapshot = r.state().snapshot(2);
+    let snapshot = r.state().snapshot(at(2));
     assert!(
         snapshot
             .active
@@ -345,13 +351,13 @@ fn repeated_disconnect_is_idempotent_when_error_is_unchanged() {
     );
     r.reduce(Event::Disconnected {
         server_id: "local".into(),
-        at: 2,
+        at: at(2),
         error: "down".into(),
     });
     assert!(
         !r.reduce(Event::Disconnected {
             server_id: "local".into(),
-            at: 3,
+            at: at(3),
             error: "down".into()
         })
         .changed
@@ -369,15 +375,18 @@ fn reconnect_resolves_internal_error_but_does_not_freshen_data() {
     );
     r.reduce(Event::Disconnected {
         server_id: "local".into(),
-        at: 2,
+        at: at(2),
         error: "refused".into(),
     });
-    assert_eq!(r.state().snapshot(2).alerting_state, OverallState::Error);
+    assert_eq!(
+        r.state().snapshot(at(2)).alerting_state,
+        OverallState::Error
+    );
     r.reduce(Event::Connected {
         server_id: "local".into(),
-        at: 3,
+        at: at(3),
     });
-    let snapshot = r.state().snapshot(3);
+    let snapshot = r.state().snapshot(at(3));
     assert_eq!(snapshot.active.len(), 1);
     assert!(snapshot.active[0].stale);
 }
@@ -385,15 +394,22 @@ fn reconnect_resolves_internal_error_but_does_not_freshen_data() {
 #[test]
 fn connection_error_is_an_internal_incident() {
     let mut r = reducer(&["local"]);
+    let occurred_at = at(2)
+        .replace_nanosecond(123_456_789)
+        .expect("valid test nanosecond");
     let transition = r.reduce(Event::Disconnected {
         server_id: "local".into(),
-        at: 2,
+        at: occurred_at,
         error: "connection refused".into(),
     });
-    let snapshot = r.state().snapshot(2);
+    let snapshot = r.state().snapshot(at(3));
     assert_eq!(snapshot.alerting_state, OverallState::InternalError);
     assert_eq!(snapshot.active[0].key, "internal.connection.local");
     assert_eq!(snapshot.active[0].details, "connection refused");
+    assert_eq!(
+        snapshot.active[0].incident_started_at,
+        "1970-01-01T00:00:02.123456789Z"
+    );
     assert_eq!(transition.effects.len(), 1);
 }
 
@@ -402,12 +418,12 @@ fn reconnect_notifies_once_that_connection_incident_resolved() {
     let mut r = reducer(&["local"]);
     r.reduce(Event::Disconnected {
         server_id: "local".into(),
-        at: 2,
+        at: at(2),
         error: "down".into(),
     });
     let transition = r.reduce(Event::Connected {
         server_id: "local".into(),
-        at: 3,
+        at: at(3),
     });
     assert!(
         matches!(&transition.effects[..], [Effect::Notify { title, .. }] if title == "OK: internal.connection.local")
@@ -415,7 +431,7 @@ fn reconnect_notifies_once_that_connection_incident_resolved() {
     assert!(
         r.reduce(Event::Connected {
             server_id: "local".into(),
-            at: 4
+            at: at(4)
         })
         .effects
         .is_empty()
@@ -427,7 +443,7 @@ fn tunnel_failure_is_distinct_and_marks_server_data_stale() {
     let mut r = reducer(&["remote"]);
     r.reduce(Event::Connected {
         server_id: "remote".into(),
-        at: 1,
+        at: at(1),
     });
     notify(
         &mut r,
@@ -437,16 +453,16 @@ fn tunnel_failure_is_distinct_and_marks_server_data_stale() {
     );
     r.reduce(Event::Disconnected {
         server_id: "remote".into(),
-        at: 2,
+        at: at(2),
         error: "socket closed".into(),
     });
 
     let transition = r.reduce(Event::TunnelFailed {
         server_id: "remote".into(),
-        at: 2,
+        at: at(2),
         error: "ssh exited".into(),
     });
-    let snapshot = r.state().snapshot(2);
+    let snapshot = r.state().snapshot(at(2));
     assert!(!snapshot.servers[0].connected);
     assert!(
         snapshot
@@ -480,14 +496,14 @@ fn tunnel_readiness_resolves_only_the_tunnel_incident() {
     let mut r = reducer(&["remote"]);
     r.reduce(Event::TunnelFailed {
         server_id: "remote".into(),
-        at: 1,
+        at: at(1),
         error: "ssh exited".into(),
     });
     let transition = r.reduce(Event::TunnelReady {
         server_id: "remote".into(),
-        at: 2,
+        at: at(2),
     });
-    assert!(r.state().snapshot(2).active.is_empty());
+    assert!(r.state().snapshot(at(2)).active.is_empty());
     assert!(matches!(
         &transition.effects[..],
         [Effect::Notify { title, body }]
@@ -496,7 +512,7 @@ fn tunnel_readiness_resolves_only_the_tunnel_incident() {
     assert!(
         !r.reduce(Event::TunnelReady {
             server_id: "remote".into(),
-            at: 3,
+            at: at(3),
         })
         .changed
     );
@@ -513,7 +529,7 @@ fn fresh_snapshot_replaces_stale_data() {
     );
     r.reduce(Event::Disconnected {
         server_id: "local".into(),
-        at: 2,
+        at: at(2),
         error: String::new(),
     });
     notify(
@@ -522,7 +538,7 @@ fn fresh_snapshot_replaces_stale_data() {
         notification(vec![incident("disk", IncidentState::Error)]),
         3,
     );
-    assert!(!r.state().snapshot(3).active[0].stale);
+    assert!(!r.state().snapshot(at(3)).active[0].stale);
 }
 
 #[test]
@@ -536,30 +552,30 @@ fn snooze_classifies_and_unsnooze_restores_incident() {
     );
     let transition = r.reduce(Event::Snooze {
         key: "local.disk".into(),
-        until: 100,
+        until: at(100),
     });
-    assert_eq!(r.state().snapshot(50).active.len(), 1);
-    assert!(r.state().snapshot(50).snoozed.is_empty());
+    assert_eq!(r.state().snapshot(at(50)).active.len(), 1);
+    assert!(r.state().snapshot(at(50)).snoozed.is_empty());
     assert_eq!(
         commit_proposed_snoozes(&mut r, transition),
         SnoozeAction::Set {
             key: "local.disk".into(),
-            until: 100,
+            until: at(100),
         }
     );
-    assert_eq!(r.state().snapshot(50).snoozed.len(), 1);
-    assert!(r.state().snapshot(50).active.is_empty());
+    assert_eq!(r.state().snapshot(at(50)).snoozed.len(), 1);
+    assert!(r.state().snapshot(at(50)).active.is_empty());
     let transition = r.reduce(Event::Unsnooze {
         key: "local.disk".into(),
     });
-    assert!(r.state().snapshot(50).active.is_empty());
+    assert!(r.state().snapshot(at(50)).active.is_empty());
     assert_eq!(
         commit_proposed_snoozes(&mut r, transition),
         SnoozeAction::Remove {
             key: "local.disk".into(),
         }
     );
-    assert_eq!(r.state().snapshot(50).active.len(), 1);
+    assert_eq!(r.state().snapshot(at(50)).active.len(), 1);
 }
 
 #[test]
@@ -567,12 +583,12 @@ fn snooze_expires_at_exact_boundary_and_requests_persistence() {
     let mut r = reducer(&["local"]);
     let transition = r.reduce(Event::Snooze {
         key: "local.disk".into(),
-        until: 100,
+        until: at(100),
     });
     commit_proposed_snoozes(&mut r, transition);
-    assert_eq!(r.reduce(Event::Tick { at: 99 }), Transition::default());
+    assert_eq!(r.reduce(Event::Tick { at: at(99) }), Transition::default());
 
-    let first_attempt = r.reduce(Event::Tick { at: 100 });
+    let first_attempt = r.reduce(Event::Tick { at: at(100) });
     assert!(!first_attempt.changed);
     assert_eq!(
         first_attempt.effects,
@@ -587,7 +603,7 @@ fn snooze_expires_at_exact_boundary_and_requests_persistence() {
 
     // A failed write means no commit event, so the next tick proposes the same
     // cleanup again without any special retry state.
-    let retry = r.reduce(Event::Tick { at: 101 });
+    let retry = r.reduce(Event::Tick { at: at(101) });
     assert_eq!(retry.effects, first_attempt.effects);
     commit_proposed_snoozes(&mut r, retry);
     assert!(r.state().snoozes().is_empty());
@@ -598,7 +614,7 @@ fn snooze_survives_updates_and_disconnects() {
     let mut r = reducer(&["local"]);
     let transition = r.reduce(Event::Snooze {
         key: "local.disk".into(),
-        until: 100,
+        until: at(100),
     });
     commit_proposed_snoozes(&mut r, transition);
     notify(
@@ -609,10 +625,10 @@ fn snooze_survives_updates_and_disconnects() {
     );
     r.reduce(Event::Disconnected {
         server_id: "local".into(),
-        at: 2,
+        at: at(2),
         error: String::new(),
     });
-    let snapshot = r.state().snapshot(50);
+    let snapshot = r.state().snapshot(at(50));
     assert_eq!(snapshot.snoozed.len(), 1);
     assert!(snapshot.snoozed[0].incident.stale);
 }
@@ -634,7 +650,7 @@ fn forget_removes_only_matching_stale_incident() {
     );
     r.reduce(Event::Disconnected {
         server_id: "first".into(),
-        at: 2,
+        at: at(2),
         error: String::new(),
     });
     assert!(
@@ -645,7 +661,7 @@ fn forget_removes_only_matching_stale_incident() {
     );
     let keys = r
         .state()
-        .snapshot(2)
+        .snapshot(at(2))
         .active
         .into_iter()
         .map(|i| i.key)
@@ -670,7 +686,7 @@ fn forget_refuses_fresh_incident_and_forgotten_data_can_reappear() {
     );
     r.reduce(Event::Disconnected {
         server_id: "local".into(),
-        at: 2,
+        at: at(2),
         error: String::new(),
     });
     r.reduce(Event::ForgetStale {
@@ -682,7 +698,7 @@ fn forget_refuses_fresh_incident_and_forgotten_data_can_reappear() {
         notification(vec![incident("disk", IncidentState::Error)]),
         3,
     );
-    assert_eq!(r.state().snapshot(3).active.len(), 1);
+    assert_eq!(r.state().snapshot(at(3)).active.len(), 1);
 }
 
 #[test]
@@ -699,10 +715,10 @@ fn severity_precedence_and_snoozed_state_are_independent() {
     );
     let transition = r.reduce(Event::Snooze {
         key: "local.err".into(),
-        until: 100,
+        until: at(100),
     });
     commit_proposed_snoozes(&mut r, transition);
-    let snapshot = r.state().snapshot(50);
+    let snapshot = r.state().snapshot(at(50));
     assert_eq!(snapshot.alerting_state, OverallState::Warning);
     assert_eq!(snapshot.snoozed_state, Some(OverallState::Error));
 }
@@ -713,21 +729,21 @@ fn unknown_events_for_unconfigured_servers_do_not_mutate_state() {
     assert!(
         !r.reduce(Event::Connected {
             server_id: "other".into(),
-            at: 1
+            at: at(1)
         })
         .changed
     );
     assert!(
         !r.reduce(Event::Heartbeat {
             server_id: "other".into(),
-            at: 2
+            at: at(2)
         })
         .changed
     );
     assert!(
         !r.reduce(Event::Disconnected {
             server_id: "other".into(),
-            at: 3,
+            at: at(3),
             error: "x".into()
         })
         .changed
@@ -735,17 +751,17 @@ fn unknown_events_for_unconfigured_servers_do_not_mutate_state() {
     assert!(
         !r.reduce(Event::TunnelReady {
             server_id: "other".into(),
-            at: 4,
+            at: at(4),
         })
         .changed
     );
     assert!(
         !r.reduce(Event::TunnelFailed {
             server_id: "other".into(),
-            at: 5,
+            at: at(5),
             error: "x".into(),
         })
         .changed
     );
-    assert_eq!(r.state().snapshot(3).unknown_server_count, 1);
+    assert_eq!(r.state().snapshot(at(3)).unknown_server_count, 1);
 }

@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use time::OffsetDateTime;
+
 /// Reason for a proposed snooze-map write.
 ///
 /// Runtime uses this metadata for success logging and to distinguish explicit
@@ -7,7 +9,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SnoozeAction {
     /// Add or replace one deadline.
-    Set { key: String, until: i64 },
+    Set { key: String, until: OffsetDateTime },
     /// Remove one deadline at the user's request.
     Remove { key: String },
     /// Remove deadlines that have passed; keys are retained for useful logs.
@@ -27,7 +29,7 @@ pub enum Effect {
     /// Writes a proposed complete map before committing it to live state.
     PersistSnoozes {
         /// Exact replacement map to persist and, on success, commit.
-        snoozes: BTreeMap<String, i64>,
+        snoozes: BTreeMap<String, OffsetDateTime>,
         /// Operation metadata not encoded by the replacement map itself.
         action: SnoozeAction,
     },

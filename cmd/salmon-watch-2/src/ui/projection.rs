@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use chrono::{Datelike, Local, NaiveDateTime, TimeZone, Timelike, Utc};
 use slint::{Model, ModelRc, VecModel};
+use time::OffsetDateTime;
 
 use super::{IncidentView, MainWindow, SalmonTray, ServerView};
 use crate::domain::{Incident, IncidentState, OverallState as DomainOverallState, UiSnapshot};
@@ -34,9 +35,7 @@ pub fn apply_snapshot(
         .iter()
         .map(|server| {
             let heartbeat_status = heartbeat_status(
-                server
-                    .last_heartbeat_at
-                    .map(|timestamp| timestamp.saturating_mul(1_000)),
+                server.last_heartbeat_at.and_then(offset_datetime_millis),
                 now_millis,
             );
             ServerView {
@@ -49,7 +48,8 @@ pub fn apply_snapshot(
                     "connecting"
                 }
                 .into(),
-                last_heartbeat: format_unix_timestamp(server.last_heartbeat_at, now_millis).into(),
+                last_heartbeat: format_domain_timestamp(server.last_heartbeat_at, now_millis)
+                    .into(),
                 connected: server.connected,
                 heartbeat_warning: heartbeat_status == HeartbeatStatus::Warning,
                 heartbeat_overdue: heartbeat_status == HeartbeatStatus::Overdue,
@@ -136,7 +136,11 @@ where
 }
 
 /// Converts a domain incident to the integer severity contract used by Slint.
-fn incident_view(incident: &Incident, snoozed_until: Option<i64>, now_millis: i64) -> IncidentView {
+fn incident_view(
+    incident: &Incident,
+    snoozed_until: Option<OffsetDateTime>,
+    now_millis: i64,
+) -> IncidentView {
     let state = match incident.state {
         IncidentState::Ok => "ok",
         IncidentState::Warning => "warning",
@@ -155,7 +159,7 @@ fn incident_view(incident: &Incident, snoozed_until: Option<i64>, now_millis: i6
         details: incident.details.clone().into(),
         started_at: display_wire_time(&incident.incident_started_at, now_millis).into(),
         snoozed_until: snoozed_until
-            .map(|until| format_unix_timestamp(Some(until), now_millis))
+            .map(|until| format_domain_timestamp(Some(until), now_millis))
             .unwrap_or_default()
             .into(),
         severity: if incident.state != IncidentState::Ok && incident.key.starts_with("internal.") {
@@ -172,6 +176,17 @@ fn incident_view(incident: &Incident, snoozed_until: Option<i64>, now_millis: i6
     }
 }
 
+fn format_domain_timestamp(value: Option<OffsetDateTime>, now_millis: i64) -> String {
+    let Some(value_millis) = value.and_then(offset_datetime_millis) else {
+        return "never".into();
+    };
+    format_timestamp_millis(value_millis, now_millis)
+}
+
+fn offset_datetime_millis(timestamp: OffsetDateTime) -> Option<i64> {
+    i64::try_from(timestamp.unix_timestamp_nanos().div_euclid(1_000_000)).ok()
+}
+
 /// Accepts both RFC 3339 server timestamps and decimal Unix seconds from internal incidents.
 ///
 /// Invalid values are shown verbatim so protocol/debug information is not hidden
@@ -183,10 +198,9 @@ fn display_wire_time(value: &str, now_millis: i64) -> String {
     if let Ok(timestamp) =
         time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
     {
-        let millis = timestamp.unix_timestamp_nanos().div_euclid(1_000_000);
-        i64::try_from(millis)
+        offset_datetime_millis(timestamp)
             .map(|millis| format_timestamp_millis(millis, now_millis))
-            .unwrap_or_else(|_| value.to_owned())
+            .unwrap_or_else(|| value.to_owned())
     } else if let Ok(timestamp) = value.parse::<i64>() {
         format_unix_timestamp(Some(timestamp), now_millis)
     } else {
@@ -396,6 +410,16 @@ mod tests {
             heartbeat_status(Some(NOW - 3 * 60 * 60 * 1_000), NOW),
             HeartbeatStatus::Overdue
         );
+    }
+
+    #[test]
+    fn domain_timestamp_conversion_preserves_milliseconds() {
+        let timestamp = OffsetDateTime::from_unix_timestamp(1_800_000_000)
+            .unwrap()
+            .replace_nanosecond(123_456_789)
+            .unwrap();
+
+        assert_eq!(offset_datetime_millis(timestamp), Some(1_800_000_000_123));
     }
 
     #[test]

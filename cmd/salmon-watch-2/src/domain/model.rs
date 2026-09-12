@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 
 /// Severity reported by Salmon for one monitored item.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -49,10 +50,10 @@ pub struct ServerStatus {
     pub connected: bool,
     /// Distinguishes startup/unknown from a connection known to be offline.
     pub initialized: bool,
-    /// Unix seconds of the last connected/disconnected transition.
-    pub connection_changed_at: Option<i64>,
-    /// Unix seconds when the client received the latest heartbeat frame.
-    pub last_heartbeat_at: Option<i64>,
+    /// Wall-clock instant of the last connected/disconnected transition.
+    pub connection_changed_at: Option<OffsetDateTime>,
+    /// Wall-clock instant when the client received the latest heartbeat frame.
+    pub last_heartbeat_at: Option<OffsetDateTime>,
 }
 
 /// Aggregated state used by the window and tray.
@@ -68,11 +69,11 @@ pub enum OverallState {
     Error,
 }
 
-/// Incident paired with its exclusive Unix-second snooze deadline.
+/// Incident paired with its exclusive snooze deadline.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnoozedIncident {
     pub incident: Incident,
-    pub until: i64,
+    pub until: OffsetDateTime,
 }
 
 /// Immutable, display-ready view of domain state published to the UI thread.
@@ -101,12 +102,12 @@ pub struct AppState {
     pub(crate) incidents: HashMap<String, Vec<Incident>>,
     /// Client-generated connection and tunnel failures keyed by `internal.*`.
     pub(crate) internal_incidents: BTreeMap<String, Incident>,
-    /// Incident key to exclusive Unix-second deadline, including currently absent items.
-    pub(crate) snoozed: BTreeMap<String, i64>,
+    /// Incident key to exclusive deadline, including currently absent items.
+    pub(crate) snoozed: BTreeMap<String, OffsetDateTime>,
 }
 
 impl AppState {
-    pub fn new(server_ids: Vec<String>, snoozed: BTreeMap<String, i64>) -> Self {
+    pub fn new(server_ids: Vec<String>, snoozed: BTreeMap<String, OffsetDateTime>) -> Self {
         let servers = server_ids
             .iter()
             .map(|id| {
@@ -131,16 +132,16 @@ impl AppState {
         }
     }
 
-    pub fn snoozes(&self) -> &BTreeMap<String, i64> {
+    pub fn snoozes(&self) -> &BTreeMap<String, OffsetDateTime> {
         &self.snoozed
     }
 
-    /// Projects canonical state while classifying snoozes at `now` (Unix seconds).
+    /// Projects canonical state while classifying snoozes at `now`.
     ///
     /// Expired entries are treated as active here. A tick proposes their
     /// removal, but live state changes only after persistence acknowledges the
     /// replacement map, keeping projection side-effect free.
-    pub fn snapshot(&self, now: i64) -> UiSnapshot {
+    pub fn snapshot(&self, now: OffsetDateTime) -> UiSnapshot {
         let mut incidents: Vec<_> = self.internal_incidents.values().cloned().collect();
         for id in &self.server_order {
             if let Some(server_incidents) = self.incidents.get(id) {
