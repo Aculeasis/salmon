@@ -14,7 +14,7 @@ pub enum Event {
     Disconnected {
         server_id: String,
         at: i64,
-        /// Empty when another incident (normally the SSH tunnel) owns the cause.
+        /// Empty when the owning tunnel process already reported the root cause.
         error: String,
     },
     TunnelReady {

@@ -336,7 +336,7 @@ async fn run_async(
     }
 
     // Keep draining events while clients stop so a client already waiting on a
-    // full event channel cannot prevent shutdown. Joining here lets SSH tunnel
+    // full event channel cannot prevent shutdown. Joining here lets tunnel
     // tasks kill and reap their child processes before Tokio is destroyed.
     drop(events_tx);
     while !network_tasks.is_empty() {

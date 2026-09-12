@@ -15,6 +15,20 @@ wsClient:
     #       remoteSalmonAddr: 127.0.0.1:41990
     #       extraSshArgs: ["-i", "/etc/salmon-watch/remote.key"]
 
+    # You can use a custom tunnel command instead of the SSH configuration
+    # above. The first item is the executable; the remaining items are passed
+    # directly as arguments, without a shell.
+    # - id: custom-tunnel
+    #   addr: 127.0.0.1:41993
+    #   tunnel:
+    #     customCommand:
+    #       command: ["my-tunnel", "--listen", "127.0.0.1:41993"]
+    #       # Omit readinessProbe if the command is ready immediately after it
+    #       # starts. Otherwise, WebSocket connections wait until this text
+    #       # appears in either stdout or stderr.
+    #       readinessProbe:
+    #         containsOutput: "tunnel ready"
+
     # TLS and bearer-token example. Run `salmon-watch generate-bearer-token
     # secure` to create the token and print the corresponding server config.
     # - id: secure

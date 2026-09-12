@@ -118,8 +118,8 @@ impl Default for ClientOptions {
 
 /// Runs the complete transport supervisor for one configured server.
 ///
-/// Tunneled servers delegate lifecycle ownership to the SSH supervisor, which
-/// starts this module's connection loop only after its readiness marker.
+/// Tunneled servers delegate lifecycle ownership to the process supervisor,
+/// which starts this module's connection loop only after optional readiness.
 pub async fn run_client(
     server: ServerConfig,
     events: mpsc::Sender<Event>,

@@ -17,24 +17,48 @@ const READY_MARKER: &str = "SALMON_TUNNEL_READY";
 const MAX_FAILURE_OUTPUT_BYTES: usize = 1024;
 const DEFAULT_RESTART_DELAY: Duration = Duration::from_secs(5);
 
-/// Executable SSH command plus the output token that proves forwarding is ready.
+/// Executable tunnel command plus an optional output token proving readiness.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CommandSpec {
     pub program: String,
     /// Complete argv without shell interpretation.
     pub args: Vec<String>,
-    /// May arrive on stdout or stderr and may span arbitrary read chunks.
-    pub readiness_marker: String,
+    /// May arrive on stdout or stderr and span reads; absence means immediately ready.
+    pub readiness_probe: Option<String>,
 }
 
 impl CommandSpec {
+    /// Adapts either supported configuration shape to the one process supervisor.
+    pub fn for_server(server: &ServerConfig) -> Option<Self> {
+        let tunnel = server.tunnel.as_ref()?;
+        if let Some(custom) = &tunnel.custom_command {
+            let (program, args) = custom
+                .command
+                .split_first()
+                .expect("validated custom tunnel command has an executable");
+            return Some(Self {
+                program: program.clone(),
+                args: args.to_vec(),
+                readiness_probe: custom
+                    .readiness_probe
+                    .as_ref()
+                    .map(|probe| probe.contains_output.clone()),
+            });
+        }
+
+        let ssh = tunnel
+            .ssh
+            .as_ref()
+            .expect("validated tunnel has exactly one command adapter");
+        Some(Self::for_ssh(server, ssh))
+    }
+
     /// Reproduces the hardened external-OpenSSH invocation used by the Go watcher.
     ///
     /// `ExitOnForwardFailure` plus `LocalCommand` is the readiness protocol: the
     /// marker is printed only after SSH has established the session and accepted
     /// the local forward. The WebSocket must never dial before that marker.
-    pub fn for_server(server: &ServerConfig) -> Option<Self> {
-        let ssh = &server.tunnel.as_ref()?.ssh;
+    fn for_ssh(server: &ServerConfig, ssh: &crate::config::SshTunnelConfig) -> Self {
         let port = if ssh.port == 0 { 22 } else { ssh.port };
         let mut args = vec![
             "-N".into(),
@@ -60,32 +84,33 @@ impl CommandSpec {
         ];
         args.extend(ssh.extra_ssh_args.iter().cloned());
         args.push(format!("{}@{}", ssh.user, ssh.host));
-        Some(Self {
+        Self {
             program: "ssh".into(),
             args,
-            readiness_marker: READY_MARKER.into(),
-        })
+            readiness_probe: Some(READY_MARKER.into()),
+        }
     }
 }
 
-/// Owns the SSH child and the WebSocket nested inside it for one server.
+/// Owns the tunnel child and the WebSocket nested inside it for one server.
 ///
 /// Ownership is intentionally hierarchical: the tunnel starts first, the client
 /// runs only while it is ready, and shutdown waits for both tasks and the child
 /// process. This ordering prevents leaked SSH processes and misleading socket
-/// incidents when the tunnel is the root cause.
+/// incidents when the tunnel is the root cause. SSH and custom commands both
+/// enter this exact supervisor after their small configuration adapters run.
 pub(crate) async fn run(
     server: ServerConfig,
     events: mpsc::Sender<Event>,
     shutdown: watch::Receiver<bool>,
 ) {
     let server_id = server.id.clone();
-    let spec = CommandSpec::for_server(&server).expect("tunneled server has an SSH command");
+    let spec = CommandSpec::for_server(&server).expect("tunneled server has a command");
     run_with_spec(server, spec, events, shutdown, DEFAULT_RESTART_DELAY).await;
-    log::info!("server {server_id} SSH tunnel stopped");
+    log::info!("server {server_id} tunnel stopped");
 }
 
-/// Supervises repeated SSH generations using an injectable command and delay.
+/// Supervises repeated tunnel-process generations using an injectable delay.
 async fn run_with_spec(
     server: ServerConfig,
     spec: CommandSpec,
@@ -97,15 +122,11 @@ async fn run_with_spec(
         if *shutdown.borrow() {
             return;
         }
-        log::info!(
-            "server {} starting SSH tunnel with {}",
-            server.id,
-            spec.program
-        );
+        log::info!("server {} starting tunnel with {}", server.id, spec.program);
         let mut child = match spawn(&spec) {
             Ok(child) => child,
             Err(error) => {
-                let details = format!("Failed to start SSH tunnel command: {error}");
+                let details = format!("Failed to start tunnel command: {error}");
                 log::error!("server {}: {details}", server.id);
                 if !send_tunnel_failure(&events, &server.id, details).await
                     || !wait_to_restart(&mut shutdown, restart_delay).await
@@ -116,37 +137,41 @@ async fn run_with_spec(
             }
         };
 
-        let stdout = child.stdout.take().expect("SSH stdout is piped");
-        let stderr = child.stderr.take().expect("SSH stderr is piped");
+        let stdout = child.stdout.take().expect("tunnel stdout is piped");
+        let stderr = child.stderr.take().expect("tunnel stderr is piped");
         let (ready_tx, mut ready_rx) = mpsc::channel(2);
         let stdout_task = tokio::spawn(capture_output(
             stdout,
-            spec.readiness_marker.clone(),
+            spec.readiness_probe.clone(),
             ready_tx.clone(),
         ));
         let stderr_task = tokio::spawn(capture_output(
             stderr,
-            spec.readiness_marker.clone(),
+            spec.readiness_probe.clone(),
             ready_tx,
         ));
 
-        /// Mutually exclusive ways the current SSH generation can leave startup.
+        /// Mutually exclusive ways the current tunnel generation can leave startup.
         enum BeforeReady {
             Ready,
             Exited(io::Result<std::process::ExitStatus>),
             Shutdown,
         }
-        let outcome = tokio::select! {
-            marker = ready_rx.recv() => if marker.is_some() { BeforeReady::Ready } else {
-                BeforeReady::Exited(child.wait().await)
-            },
-            status = child.wait() => BeforeReady::Exited(status),
-            _ = shutdown.changed() => BeforeReady::Shutdown,
+        let outcome = if spec.readiness_probe.is_none() {
+            BeforeReady::Ready
+        } else {
+            tokio::select! {
+                marker = ready_rx.recv() => if marker.is_some() { BeforeReady::Ready } else {
+                    BeforeReady::Exited(child.wait().await)
+                },
+                status = child.wait() => BeforeReady::Exited(status),
+                _ = shutdown.changed() => BeforeReady::Shutdown,
+            }
         };
 
         match outcome {
             BeforeReady::Ready => {
-                log::info!("server {} SSH tunnel is ready", server.id);
+                log::info!("server {} tunnel is ready", server.id);
                 if events
                     .send(Event::TunnelReady {
                         server_id: server.id.clone(),
@@ -186,10 +211,10 @@ async fn run_with_spec(
                             status,
                             stdout_task,
                             stderr_task,
-                            &spec.readiness_marker,
+                            spec.readiness_probe.as_deref(),
                         )
                         .await;
-                        log::error!("server {} SSH tunnel failed: {details}", server.id);
+                        log::error!("server {} tunnel failed: {details}", server.id);
                         if !send_tunnel_failure(&events, &server.id, details).await
                             || !wait_to_restart(&mut shutdown, restart_delay).await
                         {
@@ -212,9 +237,14 @@ async fn run_with_spec(
                 }
             }
             BeforeReady::Exited(status) => {
-                let details =
-                    failure_details(status, stdout_task, stderr_task, &spec.readiness_marker).await;
-                log::error!("server {} SSH tunnel failed: {details}", server.id);
+                let details = failure_details(
+                    status,
+                    stdout_task,
+                    stderr_task,
+                    spec.readiness_probe.as_deref(),
+                )
+                .await;
+                log::error!("server {} tunnel failed: {details}", server.id);
                 if !send_tunnel_failure(&events, &server.id, details).await
                     || !wait_to_restart(&mut shutdown, restart_delay).await
                 {
@@ -231,7 +261,7 @@ async fn run_with_spec(
     }
 }
 
-/// Spawns SSH without a shell, with captured output and kill-on-drop as a backstop.
+/// Spawns the configured executable without a shell and with kill-on-drop as a backstop.
 fn spawn(spec: &CommandSpec) -> io::Result<Child> {
     let mut command = Command::new(&spec.program);
     command
@@ -245,7 +275,7 @@ fn spawn(spec: &CommandSpec) -> io::Result<Child> {
 }
 
 #[cfg(unix)]
-/// Keeps terminal Ctrl+C from killing SSH before the parent can reap it cleanly.
+/// Keeps terminal Ctrl+C from killing the child before the parent can reap it cleanly.
 fn isolate_from_terminal_signals(command: &mut Command) {
     command.process_group(0);
 }
@@ -267,7 +297,7 @@ async fn stop_child(child: &mut Child) {
 }
 
 async fn wait_to_restart(shutdown: &mut watch::Receiver<bool>, delay: Duration) -> bool {
-    log::info!("SSH tunnel will restart in {}s", delay.as_secs_f64());
+    log::info!("tunnel will restart in {}s", delay.as_secs_f64());
     tokio::select! {
         _ = sleep(delay) => true,
         _ = shutdown.changed() => false,
@@ -290,16 +320,16 @@ async fn failure_details(
     status: io::Result<std::process::ExitStatus>,
     stdout_task: JoinHandle<CapturedOutput>,
     stderr_task: JoinHandle<CapturedOutput>,
-    readiness_marker: &str,
+    readiness_probe: Option<&str>,
 ) -> String {
     let stdout = stdout_task.await.unwrap_or_default();
     let stderr = stderr_task.await.unwrap_or_default();
     let mut details = match status {
-        Ok(status) if status.success() => "SSH tunnel command exited unexpectedly".to_owned(),
-        Ok(status) => format!("SSH tunnel command exited: {status}"),
-        Err(error) => format!("Waiting for SSH tunnel command failed: {error}"),
+        Ok(status) if status.success() => "Tunnel command exited unexpectedly".to_owned(),
+        Ok(status) => format!("Tunnel command exited: {status}"),
+        Err(error) => format!("Waiting for tunnel command failed: {error}"),
     };
-    let output = failure_output(&stderr.text(), &stdout.text(), readiness_marker);
+    let output = failure_output(&stderr.text(), &stdout.text(), readiness_probe);
     if !output.is_empty() {
         details.push_str("\n\n");
         details.push_str(&output);
@@ -307,7 +337,7 @@ async fn failure_details(
     details
 }
 
-/// Captured diagnostic tail from one SSH output stream.
+/// Captured diagnostic tail from one tunnel-process output stream.
 #[derive(Default)]
 struct CapturedOutput {
     tail: TailBuffer,
@@ -321,14 +351,18 @@ impl CapturedOutput {
 
 /// Drains one child pipe continuously while independently probing for readiness.
 ///
-/// Both stdout and stderr must be drained concurrently: OpenSSH or user hooks can
+/// Both stdout and stderr must be drained concurrently: tunnel processes can
 /// write enough output to fill either pipe and otherwise deadlock the child.
-async fn capture_output<R>(mut reader: R, marker: String, ready: mpsc::Sender<()>) -> CapturedOutput
+async fn capture_output<R>(
+    mut reader: R,
+    probe: Option<String>,
+    ready: mpsc::Sender<()>,
+) -> CapturedOutput
 where
     R: AsyncRead + Unpin,
 {
     let mut output = CapturedOutput::default();
-    let mut matcher = ProbeMatcher::new(marker.as_bytes());
+    let mut matcher = probe.as_deref().map(str::as_bytes).map(ProbeMatcher::new);
     let mut buffer = [0; 256];
     loop {
         match reader.read(&mut buffer).await {
@@ -336,14 +370,14 @@ where
             Ok(count) => {
                 let chunk = &buffer[..count];
                 output.tail.push(chunk);
-                if matcher.push(chunk) {
+                if matcher.as_mut().is_some_and(|matcher| matcher.push(chunk)) {
                     let _ = ready.try_send(());
                 }
             }
             Err(error) => {
                 output
                     .tail
-                    .push(format!("\nreading SSH output failed: {error}").as_bytes());
+                    .push(format!("\nreading tunnel output failed: {error}").as_bytes());
                 break;
             }
         }
@@ -401,7 +435,7 @@ struct TailBuffer {
 
 impl TailBuffer {
     /// Appends output while retaining only the newest bytes, which tend to hold
-    /// SSH's final and most useful diagnostic.
+    /// the process's final and most useful diagnostic.
     fn push(&mut self, bytes: &[u8]) {
         if bytes.len() >= MAX_FAILURE_OUTPUT_BYTES {
             self.bytes = bytes[bytes.len() - MAX_FAILURE_OUTPUT_BYTES..].to_vec();
@@ -432,20 +466,20 @@ impl TailBuffer {
     }
 }
 
-/// Selects human diagnostics, preferring stderr, and strips protocol-only marker lines.
-fn failure_output(stderr: &str, stdout: &str, readiness_marker: &str) -> String {
-    fn clean(output: &str, marker: &str) -> String {
+/// Selects human diagnostics, preferring stderr, and strips protocol-only probe lines.
+fn failure_output(stderr: &str, stdout: &str, readiness_probe: Option<&str>) -> String {
+    fn clean(output: &str, probe: Option<&str>) -> String {
         output
             .lines()
-            .filter(|line| line.trim() != marker)
+            .filter(|line| Some(line.trim()) != probe)
             .collect::<Vec<_>>()
             .join("\n")
             .trim()
             .to_owned()
     }
-    let stderr = clean(stderr, readiness_marker);
+    let stderr = clean(stderr, readiness_probe);
     if stderr.is_empty() {
-        clean(stdout, readiness_marker)
+        clean(stdout, readiness_probe)
     } else {
         stderr
     }
@@ -461,7 +495,9 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{SshTunnelConfig, TunnelConfig};
+    use crate::config::{
+        CustomTunnelCommandConfig, SshTunnelConfig, TunnelConfig, TunnelReadinessProbeConfig,
+    };
     use futures_util::StreamExt;
     use tokio::net::TcpListener;
     use tokio::time::timeout;
@@ -484,7 +520,7 @@ mod tests {
             tls: None,
             auth: None,
             tunnel: Some(TunnelConfig {
-                ssh: SshTunnelConfig {
+                ssh: Some(SshTunnelConfig {
                     host: "salmon.example.com".into(),
                     user: "monitor".into(),
                     port: 2222,
@@ -495,7 +531,8 @@ mod tests {
                         "-J".into(),
                         "bastion.example.com".into(),
                     ],
-                },
+                }),
+                custom_command: None,
             }),
         };
         let command = CommandSpec::for_server(&server).unwrap();
@@ -530,7 +567,7 @@ mod tests {
                 "monitor@salmon.example.com",
             ]
         );
-        assert_eq!(command.readiness_marker, READY_MARKER);
+        assert_eq!(command.readiness_probe.as_deref(), Some(READY_MARKER));
     }
 
     #[test]
@@ -541,17 +578,40 @@ mod tests {
             tls: None,
             auth: None,
             tunnel: Some(TunnelConfig {
-                ssh: SshTunnelConfig {
+                ssh: Some(SshTunnelConfig {
                     host: "host".into(),
                     user: "user".into(),
                     port: 0,
                     remote_salmon_addr: "localhost:41990".into(),
                     extra_ssh_args: Vec::new(),
-                },
+                }),
+                custom_command: None,
             }),
         };
         let command = CommandSpec::for_server(&server).unwrap();
         assert!(command.args.windows(2).any(|args| args == ["-p", "22"]));
+    }
+
+    #[test]
+    fn custom_command_is_a_direct_adapter_to_the_generic_spec() {
+        let mut server = plain_server("localhost:41992".into());
+        server.tunnel = Some(TunnelConfig {
+            ssh: None,
+            custom_command: Some(CustomTunnelCommandConfig {
+                command: vec!["my-tunnel".into(), "--flag".into(), "value".into()],
+                readiness_probe: Some(TunnelReadinessProbeConfig {
+                    contains_output: "READY".into(),
+                }),
+            }),
+        });
+        assert_eq!(
+            CommandSpec::for_server(&server).unwrap(),
+            CommandSpec {
+                program: "my-tunnel".into(),
+                args: vec!["--flag".into(), "value".into()],
+                readiness_probe: Some("READY".into()),
+            }
+        );
     }
 
     #[test]
@@ -569,13 +629,17 @@ mod tests {
             failure_output(
                 "SALMON_TUNNEL_READY\nssh failed",
                 "less useful",
-                READY_MARKER
+                Some(READY_MARKER)
             ),
             "ssh failed"
         );
         assert_eq!(
-            failure_output("", "SALMON_TUNNEL_READY\nstdout failed", READY_MARKER),
+            failure_output("", "SALMON_TUNNEL_READY\nstdout failed", Some(READY_MARKER)),
             "stdout failed"
+        );
+        assert_eq!(
+            failure_output("", "ordinary output", None),
+            "ordinary output"
         );
     }
 
@@ -601,7 +665,7 @@ mod tests {
                 "-c".into(),
                 format!("sleep 0.15; echo {READY_MARKER} >&2; exec sleep 30"),
             ],
-            readiness_marker: READY_MARKER.into(),
+            readiness_probe: Some(READY_MARKER.into()),
         };
         let (events_tx, mut events_rx) = mpsc::channel(16);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -638,6 +702,39 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
+    async fn custom_command_without_probe_is_ready_immediately() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut server = plain_server(listener.local_addr().unwrap().to_string());
+        server.tunnel = Some(TunnelConfig {
+            ssh: None,
+            custom_command: Some(CustomTunnelCommandConfig {
+                command: vec!["sh".into(), "-c".into(), "exec sleep 30".into()],
+                readiness_probe: None,
+            }),
+        });
+        let (events_tx, mut events_rx) = mpsc::channel(16);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(run(server, events_tx, shutdown_rx));
+
+        let ready = timeout(Duration::from_secs(3), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(ready, Event::TunnelReady { .. }));
+        timeout(Duration::from_secs(3), listener.accept())
+            .await
+            .expect("WebSocket TCP connection was not attempted immediately")
+            .unwrap();
+
+        shutdown_tx.send(true).unwrap();
+        timeout(Duration::from_secs(3), task)
+            .await
+            .expect("custom tunnel task did not stop")
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
     async fn failed_tunnel_reports_output_then_restarts_and_becomes_ready() {
         let directory = tempfile::tempdir().unwrap();
         let attempt = directory.path().join("first-attempt");
@@ -652,7 +749,7 @@ mod tests {
                 "sh".into(),
                 attempt.to_string_lossy().into_owned(),
             ],
-            readiness_marker: READY_MARKER.into(),
+            readiness_probe: Some(READY_MARKER.into()),
         };
         let (events_tx, mut events_rx) = mpsc::channel(16);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -708,7 +805,7 @@ mod tests {
                 "sh".into(),
                 stop.to_string_lossy().into_owned(),
             ],
-            readiness_marker: READY_MARKER.into(),
+            readiness_probe: Some(READY_MARKER.into()),
         };
         let (events_tx, mut events_rx) = mpsc::channel(16);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);

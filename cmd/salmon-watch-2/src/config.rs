@@ -55,11 +55,36 @@ pub struct AuthConfig {
     pub bearer_token_file: String,
 }
 
-/// Tagged container retained for compatibility with the Go configuration shape.
+/// Choice of tunnel adapter; exactly one field must be present.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TunnelConfig {
-    pub ssh: SshTunnelConfig,
+    /// Convenience adapter that expands structured settings into OpenSSH argv.
+    #[serde(default)]
+    pub ssh: Option<SshTunnelConfig>,
+    /// Direct adapter for any persistent process that provides the configured endpoint.
+    #[serde(default)]
+    pub custom_command: Option<CustomTunnelCommandConfig>,
+}
+
+/// Arbitrary persistent tunnel process executed directly, without a shell.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CustomTunnelCommandConfig {
+    /// Executable followed by its arguments.
+    #[serde(default)]
+    pub command: Vec<String>,
+    /// Optional output signal; absence means ready immediately after process start.
+    #[serde(default)]
+    pub readiness_probe: Option<TunnelReadinessProbeConfig>,
+}
+
+/// Output substring that marks one custom-command generation ready.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TunnelReadinessProbeConfig {
+    /// Exact byte-compatible text searched for across both output streams.
+    pub contains_output: String,
 }
 
 /// External OpenSSH local-forward configuration.
@@ -114,7 +139,7 @@ impl Config {
                 bail!("wsClient.servers[{index}].auth.bearerTokenFile is required");
             }
             if let Some(tunnel) = &server.tunnel {
-                validate_ssh_tunnel(server, &tunnel.ssh, index)?;
+                validate_tunnel(server, tunnel, index)?;
             }
         }
         Ok(())
@@ -138,6 +163,28 @@ pub fn validate_server_id(id: &str) -> Result<()> {
         bail!("{id:?} is reserved");
     }
     Ok(())
+}
+
+/// Validates the tagged tunnel choice before runtime code builds a command.
+fn validate_tunnel(server: &ServerConfig, tunnel: &TunnelConfig, index: usize) -> Result<()> {
+    let prefix = format!("wsClient.servers[{index}].tunnel");
+    match (&tunnel.ssh, &tunnel.custom_command) {
+        (Some(ssh), None) => validate_ssh_tunnel(server, ssh, index),
+        (None, Some(custom)) => {
+            if custom.command.first().is_none_or(String::is_empty) {
+                bail!("{prefix}.customCommand.command must start with an executable");
+            }
+            if custom
+                .readiness_probe
+                .as_ref()
+                .is_some_and(|probe| probe.contains_output.is_empty())
+            {
+                bail!("{prefix}.customCommand.readinessProbe.containsOutput must not be empty");
+            }
+            Ok(())
+        }
+        _ => bail!("{prefix} must contain exactly one of ssh or customCommand"),
+    }
 }
 
 fn validate_ssh_tunnel(server: &ServerConfig, ssh: &SshTunnelConfig, index: usize) -> Result<()> {
@@ -252,7 +299,13 @@ mod tests {
             "wsClient:\n  servers:\n    - id: remote\n      addr: 127.0.0.1:42990\n      tunnel:\n        ssh:\n          host: salmon.example.com\n          user: monitor\n          port: 2222\n          remoteSalmonAddr: 127.0.0.1:41990\n          extraSshArgs: ['-i', '/tmp/key']\n",
         )
         .unwrap();
-        let ssh = &config.ws_client.servers[0].tunnel.as_ref().unwrap().ssh;
+        let ssh = config.ws_client.servers[0]
+            .tunnel
+            .as_ref()
+            .unwrap()
+            .ssh
+            .as_ref()
+            .unwrap();
         assert_eq!(ssh.host, "salmon.example.com");
         assert_eq!(ssh.user, "monitor");
         assert_eq!(ssh.port, 2222);
@@ -261,12 +314,117 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_tunnel_options() {
-        for extra in ["tunnel: {}", "tunnel: { customCommand: {} }"] {
-            let yaml = format!(
-                "wsClient:\n  servers:\n    - id: local\n      addr: localhost:41990\n      {extra}\n"
+    fn accepts_custom_tunnel_commands_with_optional_readiness_probe() {
+        let config = parse(
+            r#"wsClient:
+  servers:
+    - id: remote
+      addr: localhost:42990
+      tunnel:
+        customCommand:
+          command: ['my-tunnel', '--listen', 'localhost:42990']
+          readinessProbe:
+            containsOutput: READY
+    - id: immediate
+      addr: localhost:42991
+      tunnel:
+        customCommand:
+          command: ['other-tunnel']
+"#,
+        )
+        .unwrap();
+        let custom = config.ws_client.servers[0]
+            .tunnel
+            .as_ref()
+            .unwrap()
+            .custom_command
+            .as_ref()
+            .unwrap();
+        assert_eq!(custom.command, ["my-tunnel", "--listen", "localhost:42990"]);
+        assert_eq!(
+            custom.readiness_probe.as_ref().unwrap().contains_output,
+            "READY"
+        );
+        assert!(
+            config.ws_client.servers[1]
+                .tunnel
+                .as_ref()
+                .unwrap()
+                .custom_command
+                .as_ref()
+                .unwrap()
+                .readiness_probe
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_tunnel_adapter_selection() {
+        for yaml in [
+            r#"wsClient:
+  servers:
+    - id: local
+      addr: localhost:41990
+      tunnel: {}
+"#,
+            r#"wsClient:
+  servers:
+    - id: local
+      addr: localhost:41990
+      tunnel:
+        unsupported: {}
+"#,
+            r#"wsClient:
+  servers:
+    - id: local
+      addr: localhost:41990
+      tunnel:
+        ssh:
+          host: host
+          user: user
+          remoteSalmonAddr: localhost:1
+        customCommand:
+          command: [tunnel]
+"#,
+        ] {
+            assert!(parse(yaml).is_err(), "accepted invalid tunnel:\n{yaml}");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_custom_tunnel_commands() {
+        for yaml in [
+            r#"wsClient:
+  servers:
+    - id: remote
+      addr: localhost:42990
+      tunnel:
+        customCommand:
+          command: []
+"#,
+            r#"wsClient:
+  servers:
+    - id: remote
+      addr: localhost:42990
+      tunnel:
+        customCommand:
+          command: ['']
+"#,
+            r#"wsClient:
+  servers:
+    - id: remote
+      addr: localhost:42990
+      tunnel:
+        customCommand:
+          command: [tunnel]
+          readinessProbe:
+            containsOutput: ''
+"#,
+        ] {
+            assert!(
+                parse(yaml).is_err(),
+                "accepted invalid custom command:\n{yaml}"
             );
-            assert!(parse(&yaml).is_err(), "accepted {extra}");
         }
     }
 
