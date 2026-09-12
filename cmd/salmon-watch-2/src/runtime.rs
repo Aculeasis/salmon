@@ -11,24 +11,31 @@ use crate::domain::{AppState, Effect, Event, Incident, IncidentState, Reducer, U
 use crate::network;
 use crate::notification::{DesktopNotificationSink, NotificationSink};
 
+/// Thread-safe handoff from the reducer thread to the Slint event loop.
 type Publisher = Arc<dyn Fn(UiSnapshot) + Send + Sync>;
+/// Blocking persistence callback, executed through Tokio's blocking pool.
 type SnoozePersister = Arc<dyn Fn(&BTreeMap<String, i64>) -> Result<()> + Send + Sync>;
 
 const MAX_LOG_DETAILS_CHARS: usize = 1_000;
 
+/// One deferred structured log record derived from a domain event.
 #[derive(Debug, Eq, PartialEq)]
 struct EventLogLine {
     level: log::Level,
     message: String,
 }
 
+/// Per-server logging phase, deliberately separate from domain state.
 #[derive(Default)]
 struct EventLogState {
+    /// Connected servers whose next notification is a complete synchronization point.
     awaiting_snapshot: HashSet<String>,
+    /// Servers seen at least once, including those whose first event lacked `Connected`.
     synchronized: HashSet<String>,
 }
 
 impl EventLogState {
+    /// Converts an event into stable, bounded log lines before the event is consumed.
     fn lines(&mut self, event: &Event) -> Vec<EventLogLine> {
         match event {
             Event::Connected { server_id, .. } => {
@@ -117,6 +124,10 @@ fn incident_line(server_id: &str, action: &str, incident: &Incident) -> String {
     line
 }
 
+/// Flattens untrusted incident details into one bounded physical log line.
+///
+/// Control characters and Unicode line separators are replaced to prevent one
+/// remote value from forging log records or flooding a terminal/file.
 fn log_details(details: &str) -> String {
     let flattened = details
         .chars()
@@ -139,20 +150,41 @@ fn log_details(details: &str) -> String {
     limited
 }
 
+/// User actions accepted from the Slint thread.
 #[derive(Debug)]
 pub enum Command {
-    Snooze { key: String, seconds: i64 },
-    Unsnooze { key: String },
-    ForgetStale { key: String },
+    /// Relative duration is converted to an absolute deadline on the runtime thread.
+    Snooze {
+        key: String,
+        seconds: i64,
+    },
+    Unsnooze {
+        key: String,
+    },
+    ForgetStale {
+        key: String,
+    },
 }
 
+/// Owns the dedicated Tokio thread and its control channels.
+///
+/// Call [`RuntimeHandle::shutdown`] for deterministic teardown. `Drop` only
+/// signals cancellation because joining from arbitrary drop contexts could block
+/// or deadlock; normal application shutdown explicitly consumes the handle.
 pub struct RuntimeHandle {
     commands: mpsc::Sender<Command>,
+    /// Broadcast cancellation observed by every server and tunnel generation.
     shutdown: watch::Sender<bool>,
+    /// `Option` permits `shutdown` to take and join exactly once.
     thread: Option<JoinHandle<()>>,
 }
 
 impl RuntimeHandle {
+    /// Starts a current-thread Tokio runtime on a dedicated OS thread.
+    ///
+    /// Slint retains its required UI thread while all network state stays
+    /// serialized on this thread. Bounded channels provide backpressure rather
+    /// than allowing an outage or update burst to grow memory without limit.
     pub fn start(
         config: Config,
         snoozes: BTreeMap<String, i64>,
@@ -176,6 +208,7 @@ impl RuntimeHandle {
         self.commands.clone()
     }
 
+    /// Signals every worker and blocks until tunnels, sockets, and Tokio stop.
     pub fn shutdown(mut self) {
         log::debug!("requesting async runtime shutdown");
         let _ = self.shutdown.send(true);
@@ -194,6 +227,7 @@ impl Drop for RuntimeHandle {
     }
 }
 
+/// Builds and drives Tokio on the already-created runtime OS thread.
 fn run(
     config: Config,
     snoozes: BTreeMap<String, i64>,
@@ -222,6 +256,13 @@ fn run(
     log::info!("async runtime stopped");
 }
 
+/// Main event pump and sole owner of the reducer.
+///
+/// The one-second tick republishes even without a mutation so relative timestamps
+/// advance. Snooze writes are awaited to preserve ordering; desktop notifications
+/// are fire-and-forget blocking jobs so a slow notification daemon cannot stall
+/// network processing. Their handles are not part of `network_tasks`; Tokio's
+/// own runtime teardown remains responsible for already-started blocking jobs.
 async fn run_async(
     config: Config,
     snoozes: BTreeMap<String, i64>,
@@ -311,6 +352,7 @@ async fn run_async(
     log::info!("network services stopped");
 }
 
+/// Converts a relative UI action at the last responsible moment.
 fn command_event(command: Command) -> Event {
     match command {
         Command::Snooze { key, seconds } => Event::Snooze {
@@ -322,6 +364,7 @@ fn command_event(command: Command) -> Event {
     }
 }
 
+/// Returns Unix seconds, clamping pre-epoch/clock errors to zero.
 pub fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

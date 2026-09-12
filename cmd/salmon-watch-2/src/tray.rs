@@ -10,6 +10,7 @@ const WARNING_ICON: &[u8] = include_bytes!("../assets/tray/yellow.png");
 const ERROR_ICON: &[u8] = include_bytes!("../assets/tray/red.png");
 const TRANSPARENT_ICON: &[u8] = include_bytes!("../assets/tray/transparent.png");
 
+/// Tray rendering severity, kept UI-local so image policy does not enter the domain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OverallState {
     Unknown,
@@ -19,12 +20,16 @@ pub enum OverallState {
     Error,
 }
 
+/// Complete visual and menu state needed to render the tray.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TrayState {
     pub alerting: OverallState,
+    /// Uninitialized fraction used only while `alerting` is `Unknown`.
     pub unknown_server_count: usize,
     pub server_count: usize,
+    /// Visible count used by menu text, intentionally excluded from icon identity.
     pub alerting_count: usize,
+    /// Highest hidden severity rendered as the lower-right overlay.
     pub snoozed: Option<OverallState>,
     pub snoozed_count: usize,
 }
@@ -34,6 +39,10 @@ impl TrayState {
         !matches!(self.alerting, OverallState::Unknown | OverallState::Ok)
     }
 
+    /// Returns the visual identity relevant to icon pixels and flash cadence.
+    ///
+    /// Counts that affect only menu text are excluded so timestamp refreshes or
+    /// equivalent incident replacements cannot restart an active flash cycle.
     fn icon_identity(self) -> TrayIconIdentity {
         if self.alerting == OverallState::Unknown {
             TrayIconIdentity::Unknown {
@@ -63,6 +72,7 @@ impl TrayState {
     }
 }
 
+/// Pixel-relevant state used to decide whether an icon genuinely changed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TrayIconIdentity {
     Unknown {
@@ -76,19 +86,24 @@ enum TrayIconIdentity {
     },
 }
 
+/// Opaque token tying scheduled timer callbacks to one icon generation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FlashCycle {
     generation: u64,
 }
 
+/// Mutable phase protected for use by UI callbacks carrying cloned controllers.
 #[derive(Debug, Default)]
 struct FlashState {
     icon: Option<TrayIconIdentity>,
     flashing: bool,
+    /// True selects the colored icon; false selects the transparent image.
     showing_solid: bool,
+    /// Invalidates already scheduled callbacks whenever visual identity changes.
     generation: u64,
 }
 
+/// Shared edge-triggered state machine for stable tray flashing.
 #[derive(Clone, Debug, Default)]
 pub struct TrayFlashController {
     state: Arc<Mutex<FlashState>>,
@@ -123,12 +138,16 @@ impl TrayFlashController {
         Some(current.showing_solid)
     }
 
+    /// Checks whether a just-created cycle still owns an active flash cadence.
+    /// This generation check prevents an obsolete timer from restarting or
+    /// perturbing the phase after a newer tray state has replaced it.
     pub fn is_flashing(&self, cycle: FlashCycle) -> bool {
         let current = self.state.lock().unwrap_or_else(|error| error.into_inner());
         current.generation == cycle.generation && current.flashing
     }
 }
 
+/// Decoded source icons and composition operations used by the tray projection.
 pub struct TrayIcons {
     unknown: RgbaImage,
     ok: RgbaImage,
@@ -139,6 +158,7 @@ pub struct TrayIcons {
 }
 
 impl TrayIcons {
+    /// Decodes all embedded icons up front so startup reports broken assets early.
     pub fn load() -> Result<Self> {
         Ok(Self {
             unknown: decode_icon(UNKNOWN_ICON)?,
@@ -158,6 +178,7 @@ impl TrayIcons {
         to_slint_image(&self.transparent)
     }
 
+    /// Renders initialization progress and the optional snoozed-severity overlay.
     fn rgba_icon(&self, state: TrayState) -> Result<RgbaImage> {
         let mut icon = if state.alerting == OverallState::Unknown {
             compose_initialization_icon(
@@ -201,6 +222,10 @@ fn to_slint_image(image: &RgbaImage) -> Image {
     Image::from_rgba8(buffer)
 }
 
+/// Renders the known-server fraction as a clockwise pie starting at 12 o'clock.
+///
+/// Four-by-four subpixel sampling provides a stable antialiased boundary. The
+/// source images must share alpha exactly so only color—not silhouette—changes.
 fn compose_initialization_icon(
     ok: &RgbaImage,
     unknown: &RgbaImage,
@@ -268,6 +293,7 @@ fn compose_initialization_icon(
     Ok(result)
 }
 
+/// Scales a severity icon into the lower-right 30% and alpha-composites it.
 fn compose_overlay(base: &RgbaImage, overlay: &RgbaImage) -> Result<RgbaImage> {
     if base.width() == 0 || base.height() == 0 || overlay.width() == 0 || overlay.height() == 0 {
         bail!("tray icons must not be empty");
@@ -296,6 +322,7 @@ fn compose_overlay(base: &RgbaImage, overlay: &RgbaImage) -> Result<RgbaImage> {
     Ok(result)
 }
 
+/// Composites straight-alpha RGBA pixels and returns straight-alpha output.
 fn alpha_over(foreground: Rgba<u8>, background: Rgba<u8>) -> Rgba<u8> {
     let foreground_alpha = u32::from(foreground[3]);
     let background_alpha = u32::from(background[3]);

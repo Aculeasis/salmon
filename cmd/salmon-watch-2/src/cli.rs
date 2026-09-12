@@ -5,16 +5,21 @@ use anyhow::{Context, Result};
 
 use crate::logging::LogLevel;
 
+/// Parsed process options shared by normal execution and maintenance commands.
 #[derive(Debug, Default, PartialEq)]
 pub struct Options {
     pub start_hidden: bool,
+    /// Explicit Slint scale override; `None` preserves backend DPI detection.
     pub scale: Option<f32>,
+    /// Explicit filter; `None` selects the application default (`info`).
     pub log_level: Option<LogLevel>,
+    /// Config override; resolved to the XDG default by the command dispatcher.
     pub config: Option<PathBuf>,
     pub command: Command,
     pub help: bool,
 }
 
+/// Mutually exclusive top-level mode selected from argv.
 #[derive(Debug, Default, PartialEq)]
 pub enum Command {
     #[default]
@@ -29,6 +34,7 @@ pub enum Command {
     },
 }
 
+/// Scope of Linux desktop setup requested by the user.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SetupOperation {
     #[default]
@@ -38,6 +44,11 @@ pub enum SetupOperation {
     InstallLauncher,
 }
 
+/// Parses arguments without exiting or printing, so callers control error UX.
+///
+/// Global `--config` remains accepted after subcommands for compatibility with
+/// common CLI usage. Parsing stops at a subcommand and delegates its remaining
+/// grammar to prevent accidentally accepting run-only flags there.
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options> {
     let mut options = Options::default();
     let mut args = args.into_iter();
@@ -82,6 +93,11 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options> {
     Ok(options)
 }
 
+/// Parses setup's optional single operation plus modifiers.
+///
+/// The operation is positional and may appear at most once; keeping this
+/// separate from the top-level parser prevents setup-only flags from leaking
+/// into normal application startup.
 fn parse_setup(
     args: &mut impl Iterator<Item = OsString>,
     config: &mut Option<PathBuf>,
@@ -121,6 +137,8 @@ fn parse_setup(
     })
 }
 
+/// Parses token generation without ever accepting the secret itself on the
+/// command line, where it would be exposed through shell history and `ps`.
 fn parse_generate_bearer_token(
     args: &mut impl Iterator<Item = OsString>,
     config: &mut Option<PathBuf>,

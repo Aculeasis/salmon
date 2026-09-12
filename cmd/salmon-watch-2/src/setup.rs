@@ -14,13 +14,18 @@ const DESKTOP_ENTRY_TEMPLATE: &str = include_str!("../assets/setup/salmon-watch.
 const DESKTOP_EXEC_PLACEHOLDER: &str = "{{EXEC}}";
 const DESKTOP_ENTRY_VERSION_KEY: &str = "X-Salmon-Watch-Desktop-Entry-Version";
 
+/// Concrete XDG destinations, grouped so tests can redirect setup into a sandbox.
 #[derive(Clone, Debug)]
 struct InstallPaths {
+    /// Login autostart entry under the XDG configuration directory.
     autostart: PathBuf,
+    /// Application-menu entry under the XDG data directory.
     launcher: PathBuf,
+    /// Scalable icon referenced by both desktop entries.
     icon: PathBuf,
 }
 
+/// User-facing result of one atomic file installation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FileResult {
     Created,
@@ -28,6 +33,11 @@ enum FileResult {
     Reinstalled,
 }
 
+/// Executes Linux desktop setup using current-process and XDG locations.
+///
+/// `--reinstall` applies only to desktop integration. Configuration is always
+/// no-clobber, even during a reinstall, because it may contain credentials and
+/// hand-edited server definitions.
 pub fn execute(
     output: &mut dyn Write,
     config_filename: &Path,
@@ -76,6 +86,11 @@ pub fn execute(
     Ok(())
 }
 
+/// Dependency-injected setup implementation used to exercise filesystem edge cases.
+///
+/// All files eligible for replacement are backed up before the first mutation.
+/// Installation itself is per-file atomic, but the group is not transactional:
+/// an I/O failure after one successful persist can leave a partially updated setup.
 fn execute_with(
     output: &mut dyn Write,
     config_filename: &Path,
@@ -188,6 +203,11 @@ fn executable_path() -> Result<PathBuf> {
     executable.canonicalize().context("resolve executable")
 }
 
+/// Rejects installing a path beneath the system temporary directory.
+///
+/// Desktop entries store the absolute executable path. Accepting a test/build
+/// artifact under `/tmp` would leave an autostart entry pointing at an ephemeral
+/// file, so this is treated as an error rather than merely warned about.
 fn validate_executable_path(executable: &Path, temporary_directory: &Path) -> Result<PathBuf> {
     let executable = std::path::absolute(executable).context("resolve executable")?;
     let temporary_directory =
@@ -201,6 +221,7 @@ fn validate_executable_path(executable: &Path, temporary_directory: &Path) -> Re
     Ok(executable)
 }
 
+/// Builds one desktop entry using freedesktop `Exec` escaping, not shell quoting.
 fn desktop_entry(executable: &Path, config_filename: &Path, start_hidden: bool) -> Result<String> {
     let executable = executable
         .to_str()
@@ -218,6 +239,10 @@ fn desktop_entry(executable: &Path, config_filename: &Path, start_hidden: bool) 
     render_desktop_entry_template(DESKTOP_ENTRY_TEMPLATE, &command)
 }
 
+/// Replaces the template token only when it occurs exactly once.
+///
+/// Failing closed here prevents silently generating an entry with a missing or
+/// duplicated command if the embedded asset is edited incorrectly.
 fn render_desktop_entry_template(template: &str, command: &str) -> Result<String> {
     let mut parts = template.split(DESKTOP_EXEC_PLACEHOLDER);
     let before = parts.next().unwrap_or_default();
@@ -234,6 +259,11 @@ fn is_legacy_desktop_entry_file(path: &Path) -> bool {
     fs::read_to_string(path).is_ok_and(|contents| is_legacy_desktop_entry(&contents))
 }
 
+/// Recognizes the old generated launcher conservatively from its complete signature.
+///
+/// Presence of the version marker always means "not legacy". Complete setup
+/// reports migration only when both launcher files match, avoiding a loud note
+/// for unrelated hand-written desktop entries.
 fn is_legacy_desktop_entry(contents: &str) -> bool {
     let mut in_desktop_entry = false;
     let mut application = false;
@@ -277,6 +307,11 @@ fn is_legacy_desktop_entry(contents: &str) -> bool {
     application && name && comment && icon && exec
 }
 
+/// Quotes one argument according to the desktop-entry `Exec` field rules.
+///
+/// This deliberately differs from shell quoting. Percent is doubled because it
+/// introduces field codes, while backslash itself must be escaped twice inside
+/// a quoted argument.
 fn desktop_exec_argument(argument: &str) -> String {
     let mut output = String::with_capacity(argument.len() + 2);
     output.push('"');
@@ -296,6 +331,7 @@ fn desktop_exec_argument(argument: &str) -> String {
     output
 }
 
+/// Quotes a display-only command so it can be pasted into a POSIX shell.
 fn shell_argument(argument: &str) -> String {
     if !argument.is_empty()
         && argument
@@ -307,6 +343,7 @@ fn shell_argument(argument: &str) -> String {
     format!("'{}'", argument.replace('\'', "'\"'\"'"))
 }
 
+/// Formats the post-setup launch command, omitting a redundant default config argument.
 fn start_command(executable: &Path, config_filename: &Path) -> Result<String> {
     let executable = shell_argument(
         executable
@@ -327,6 +364,10 @@ fn start_command(executable: &Path, config_filename: &Path) -> Result<String> {
     }
 }
 
+/// Installs one public asset atomically, optionally replacing its destination.
+///
+/// `persist_noclobber` closes the check/create race in normal setup; the early
+/// existence check is only an optimization and source of the friendly result.
 fn install_file(path: &Path, contents: &[u8], replace: bool) -> Result<FileResult> {
     let parent = path
         .parent()
@@ -369,6 +410,11 @@ fn set_public_file_permissions(file: &fs::File) -> Result<()> {
     Ok(())
 }
 
+/// Copies every existing replacement target into one private temporary tree.
+///
+/// The kept directory intentionally lives below the system temporary directory
+/// and is not deleted on success: its printed path is the user's recovery
+/// mechanism after reinstall.
 fn backup_existing_files(
     targets: &[(&PathBuf, &Path)],
     backup_parent: &Path,

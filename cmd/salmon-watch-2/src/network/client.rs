@@ -29,20 +29,31 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const RECONNECT_STEP: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(10);
 
+/// Tunable transport policy kept as a value so tests can exercise timeouts quickly.
 #[derive(Clone, Copy)]
 struct ClientOptions {
+    /// Hard cap for a single decoded WebSocket message and its underlying frame.
     max_message_bytes: usize,
+    /// Covers TCP establishment plus TLS and WebSocket handshakes as one attempt.
     connect_timeout: Duration,
+    /// Maximum silence after the WebSocket handshake; any received frame resets it.
     read_timeout: Duration,
+    /// Linear backoff increment after each failed or lost connection.
     reconnect_step: Duration,
     max_reconnect_delay: Duration,
 }
 
+/// Immutable transport material prepared once before reconnection begins.
+///
+/// Bearer files and CA bundles are intentionally not hot-reloaded. Restart the
+/// application after rotating either one.
 #[derive(Clone)]
 struct ConnectionSetup {
     scheme: &'static str,
     connector: Connector,
+    /// Validated complete `Authorization` header value.
     bearer: Option<HeaderValue>,
+    /// Host used for URI/SNI/certificate verification while `addr` remains the TCP target.
     tls_server_name: Option<String>,
 }
 
@@ -62,6 +73,11 @@ impl ConnectionSetup {
         })
     }
 
+    /// Builds the handshake request while separating verification identity from routing.
+    ///
+    /// With `tls.serverName`, the URI authority drives TLS SNI and certificate
+    /// verification, but the HTTP `Host` header remains `server.addr` for parity
+    /// with the Go client and deployments that route on the configured endpoint.
     fn request(&self, server: &ServerConfig) -> Result<Request> {
         let authority = match &self.tls_server_name {
             Some(server_name) => {
@@ -100,6 +116,10 @@ impl Default for ClientOptions {
     }
 }
 
+/// Runs the complete transport supervisor for one configured server.
+///
+/// Tunneled servers delegate lifecycle ownership to the SSH supervisor, which
+/// starts this module's connection loop only after its readiness marker.
 pub async fn run_client(
     server: ServerConfig,
     events: mpsc::Sender<Event>,
@@ -112,6 +132,7 @@ pub async fn run_client(
     }
 }
 
+/// Reconnects one WebSocket until shutdown or until its owning tunnel disappears.
 pub(super) async fn run_connection_loop(
     server: ServerConfig,
     events: mpsc::Sender<Event>,
@@ -124,6 +145,8 @@ pub(super) async fn run_connection_loop(
     log::info!("server {server_id} WebSocket client stopped");
 }
 
+/// Injectable form of the reconnect loop; production uses the conservative
+/// defaults while tests shorten deadlines without changing transport logic.
 async fn run_connection_loop_with_options(
     server: ServerConfig,
     events: mpsc::Sender<Event>,
@@ -219,6 +242,8 @@ async fn run_connection_loop_with_options(
             return;
         }
 
+        // Recreating `timeout` around each `next` means every frame—not only a
+        // Salmon heartbeat—proves liveness and restarts the silence deadline.
         let disconnect_error = loop {
             let next = tokio::select! {
                 result = timeout(options.read_timeout, socket.next()) => result,
@@ -313,6 +338,9 @@ async fn run_connection_loop_with_options(
     }
 }
 
+/// Establishes TCP and performs the optional TLS plus WebSocket handshake.
+///
+/// The caller owns the deadline so it covers all phases as a single operation.
 async fn connect(
     server: &ServerConfig,
     setup: &ConnectionSetup,
@@ -344,6 +372,7 @@ async fn connect(
     .await
 }
 
+/// Loads and validates a bearer secret without exposing it in errors or logs.
 fn load_bearer_token(auth: &AuthConfig) -> Result<HeaderValue> {
     let contents = fs::read_to_string(&auth.bearer_token_file)
         .with_context(|| format!("read bearer token file {:?}", auth.bearer_token_file))?;
@@ -368,6 +397,10 @@ fn load_bearer_token(auth: &AuthConfig) -> Result<HeaderValue> {
     })
 }
 
+/// Builds a TLS client using system roots augmented by the optional custom bundle.
+///
+/// A bad certificate among native roots is warned about individually; an
+/// explicitly configured CA file must contribute at least one valid certificate.
 fn build_tls_config(tls: &TlsConfig) -> Result<Arc<ClientConfig>> {
     let native = rustls_native_certs::load_native_certs();
     for error in &native.errors {
@@ -403,6 +436,8 @@ fn build_tls_config(tls: &TlsConfig) -> Result<Arc<ClientConfig>> {
     Ok(Arc::new(config))
 }
 
+/// Splits the already validated configured address for connection setup.
+/// Bracketed IPv6 is supported without carrying brackets into DNS lookup.
 fn split_host_port(address: &str) -> Result<(&str, u16)> {
     let (host, port) = if let Some(rest) = address.strip_prefix('[') {
         rest.split_once("]:").context("address must be host:port")?
@@ -415,6 +450,7 @@ fn split_host_port(address: &str) -> Result<(&str, u16)> {
     Ok((host, port))
 }
 
+/// Adds URI brackets to a bare IPv6 host while leaving DNS names unchanged.
 fn uri_host(host: &str) -> String {
     if host.contains(':') && !host.starts_with('[') {
         format!("[{host}]")
@@ -423,6 +459,8 @@ fn uri_host(host: &str) -> String {
     }
 }
 
+/// Turns handshake failures into actionable text without including the bearer
+/// value or arbitrary response bodies that might contain sensitive data.
 fn websocket_connection_error(error: &WebSocketError, bearer_provided: bool) -> String {
     if let WebSocketError::Http(response) = error {
         if response.status() == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED {
@@ -437,6 +475,11 @@ fn websocket_connection_error(error: &WebSocketError, bearer_provided: bool) -> 
     error.to_string()
 }
 
+/// Gives a failing tunneled socket a brief chance to be attributed to SSH.
+///
+/// The tunnel supervisor sets its private shutdown watch when the SSH process
+/// exits. Without this settle window, scheduling order could briefly create both
+/// `internal.connection.*` and `internal.tunnel.*` for the same failure.
 async fn tunnel_stopped(shutdown: &mut watch::Receiver<bool>) -> bool {
     tokio::select! {
         _ = sleep(Duration::from_millis(50)) => *shutdown.borrow(),

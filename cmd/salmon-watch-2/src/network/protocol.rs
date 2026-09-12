@@ -3,21 +3,26 @@ use serde::Deserialize;
 
 use crate::domain::{Incident, NotificationData};
 
+/// Minimal wire envelope; unknown event payloads remain unparsed by design.
 #[derive(Debug, Deserialize)]
 struct Envelope {
     event: String,
+    /// Defaults only to let unknown events omit data; known events reject null below.
     #[serde(default)]
     data: serde_json::Value,
 }
 
+/// Payload shared by snapshot and incremental notification events.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Notification {
+    /// Validated when present but not used for ordering; local receipt time drives UI state.
     #[serde(default)]
     time: Option<String>,
     ongoing_incidents: OngoingIncidents,
 }
 
+/// Go-compatible incident collection, including nullable slices encoded from nil.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OngoingIncidents {
@@ -34,6 +39,10 @@ struct OngoingIncidents {
     num_items_ok: i64,
 }
 
+/// Treats explicit JSON `null` like an omitted collection.
+///
+/// This preserves compatibility with Go's nil slices while keeping malformed
+/// non-null values strict.
 fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -42,6 +51,10 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// Decodes a supported server event or returns `None` for forward-compatible unknown events.
+///
+/// Known events are validated eagerly so malformed state disconnects the client
+/// instead of partially corrupting the reducer's authoritative snapshot.
 pub fn decode_text_message(text: &str) -> Result<Option<NotificationData>> {
     let envelope: Envelope = serde_json::from_str(text).context("decoding server message")?;
     if !matches!(

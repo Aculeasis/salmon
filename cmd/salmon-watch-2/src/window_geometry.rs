@@ -6,11 +6,20 @@ use slint::winit_030::{EventResult, WinitWindowAccessor, winit::event::WindowEve
 
 use crate::persistence::{Store, WindowGeometry};
 
+/// Coordinates native placement across startup, hide/show, and window-manager events.
+///
+/// This type is intentionally UI-thread-only (`Rc<Cell<_>>`). Winit reports
+/// maximized bounds as ordinary resize events, so normal geometry and display
+/// state must be tracked separately to avoid restoring a maximized rectangle as
+/// the next normal size.
 #[derive(Clone)]
 pub struct WindowGeometryManager {
     store: Store,
+    /// Most recently observed non-maximized, non-fullscreen physical bounds.
     last_normal: Rc<Cell<Option<WindowGeometry>>>,
+    /// Suppresses redundant JSON rewrites during noisy move/resize sequences.
     last_persisted: Rc<Cell<Option<WindowGeometry>>>,
+    /// Placement being restored; also gates misleading restoration-generated events.
     pending_show: Rc<Cell<Option<WindowGeometry>>>,
 }
 
@@ -24,6 +33,7 @@ impl WindowGeometryManager {
         }
     }
 
+    /// Installs a passive Winit observer while preserving Slint's own handling.
     pub fn install_event_handler(&self, window: &slint::Window) {
         let manager = self.clone();
         window.on_winit_window_event(move |window, event| {
@@ -32,6 +42,7 @@ impl WindowGeometryManager {
         });
     }
 
+    /// Applies saved placement before mapping, then requests one scale-aware correction.
     pub fn show(&self, window: &slint::Window) -> Result<()> {
         let placement = self.pending_show.get();
         if let Some(placement) = placement {
@@ -52,6 +63,7 @@ impl WindowGeometryManager {
         Ok(())
     }
 
+    /// Captures/persists placement before unmapping and preserves maximized restore bounds.
     pub fn hide(&self, window: &slint::Window) -> Result<()> {
         let placement = self.capture_placement(window);
         let save_result = self.persist(placement);
@@ -72,6 +84,8 @@ impl WindowGeometryManager {
         self.persist(placement)
     }
 
+    /// Avoids rewriting the state file for the stream of duplicate move/resize
+    /// notifications emitted by some window managers.
     fn persist(&self, placement: Option<WindowGeometry>) -> Result<()> {
         let Some(placement) = placement else {
             return Ok(());
@@ -88,6 +102,7 @@ impl WindowGeometryManager {
         Ok(())
     }
 
+    /// Captures normal bounds plus current display state without unmapping.
     fn capture_placement(&self, window: &slint::Window) -> Option<WindowGeometry> {
         let (maximized, fullscreen) = native_display_state(window);
         if is_normal_window_state(maximized, fullscreen) {
@@ -100,6 +115,7 @@ impl WindowGeometryManager {
         })
     }
 
+    /// Ignores synthetic restoration events until the first visible redraw completes.
     fn handle_winit_event(&self, window: &slint::Window, event: &WindowEvent) {
         if matches!(event, WindowEvent::RedrawRequested)
             && window.is_visible()
@@ -122,6 +138,10 @@ impl WindowGeometryManager {
         self.observe_winit_window(window);
     }
 
+    /// Records physical outer position and inner size only in normal display state.
+    ///
+    /// Position and size use the native values available consistently across the
+    /// supported Winit backends. Errors and zero-sized transitional states are ignored.
     fn observe_winit_window(&self, window: &slint::Window) {
         let geometry = window.with_winit_window(|window| {
             if window.is_maximized() || window.fullscreen().is_some() {
@@ -149,12 +169,14 @@ impl WindowGeometryManager {
     }
 }
 
+/// Prefers Winit's native state but falls back when a native handle is unavailable.
 fn native_display_state(window: &slint::Window) -> (bool, bool) {
     window
         .with_winit_window(|window| (window.is_maximized(), window.fullscreen().is_some()))
         .unwrap_or_else(|| (window.is_maximized(), window.is_fullscreen()))
 }
 
+/// Applies nonzero physical geometry; monitor clamping remains the window manager's job.
 fn apply_window_geometry(window: &slint::Window, geometry: WindowGeometry) {
     if geometry.width == 0 || geometry.height == 0 {
         return;

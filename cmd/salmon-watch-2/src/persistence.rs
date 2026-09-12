@@ -10,9 +10,17 @@ use serde_json::Value;
 
 const STATE_FILENAME: &str = ".salmon-watch-2-state.json";
 
+/// Cloneable, process-local serialized access to the state file.
+///
+/// Updates always reload under the mutex so independent UI, geometry, and
+/// runtime writers merge through the latest on-disk representation instead of
+/// overwriting one another with stale snapshots. The mutex is not an
+/// inter-process lock: running two watcher instances against the same state
+/// file can still race, although each individual replacement remains atomic.
 #[derive(Clone)]
 pub struct Store {
     path: Arc<PathBuf>,
+    /// Shared by all clones; poisoned locks are recovered because disk remains authoritative.
     lock: Arc<Mutex<()>>,
 }
 
@@ -32,6 +40,7 @@ impl Store {
         load(&self.path)
     }
 
+    /// Atomically applies a read-modify-write transaction within this process.
     pub fn update(&self, change: impl FnOnce(&mut StateFile) -> Result<()>) -> Result<()> {
         let _guard = self
             .lock
@@ -43,6 +52,7 @@ impl Store {
     }
 }
 
+/// Versioned, forward-compatible persisted application state.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StateFile {
     #[serde(default = "schema_version")]
@@ -51,6 +61,7 @@ pub struct StateFile {
     pub snoozed: BTreeMap<String, SnoozeEntry>,
     #[serde(default)]
     pub preferences: Preferences,
+    /// Unknown top-level fields preserved across writes for forward compatibility.
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -67,6 +78,7 @@ impl Default for StateFile {
 }
 
 impl StateFile {
+    /// Decodes persisted RFC 3339 deadlines into reducer-native Unix seconds.
     pub fn decoded_snoozes(&self) -> Result<BTreeMap<String, i64>> {
         self.snoozed
             .iter()
@@ -81,6 +93,7 @@ impl StateFile {
             .collect()
     }
 
+    /// Reconciles snoozes while retaining unknown fields on entries that survive.
     pub fn replace_snoozes(&mut self, snoozes: &BTreeMap<String, i64>) -> Result<()> {
         self.snoozed.retain(|key, _| snoozes.contains_key(key));
         for (key, until) in snoozes {
@@ -105,19 +118,23 @@ impl StateFile {
     }
 }
 
+/// Persisted snooze record with room for fields introduced by newer versions.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SnoozeEntry {
+    /// RFC 3339 deadline, chosen for compatibility and human inspection.
     pub snoozed_until: String,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
 
+/// User-controlled presentation state.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Preferences {
     #[serde(default)]
     pub theme: Theme,
     #[serde(default)]
     pub sections: SectionPreferences,
+    /// Last known normal placement plus the display state to restore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_geometry: Option<WindowGeometry>,
     #[serde(flatten)]
@@ -135,6 +152,10 @@ impl Default for Preferences {
     }
 }
 
+/// Native outer-window placement in physical pixels.
+///
+/// Width and height always describe the most recent normal (not maximized or
+/// fullscreen) bounds. `maximized` is restored as a separate display state.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct WindowGeometry {
     pub x: i32,
@@ -146,12 +167,14 @@ pub struct WindowGeometry {
 }
 
 impl WindowGeometry {
+    /// Returns normal bounds without carrying a stale maximized flag.
     pub(crate) fn as_normal(mut self) -> Self {
         self.maximized = false;
         self
     }
 }
 
+/// Explicit color scheme rather than following system changes after startup.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
@@ -160,6 +183,7 @@ pub enum Theme {
     Light,
 }
 
+/// Expansion state for independently collapsible UI sections.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SectionPreferences {
     #[serde(default = "default_expanded")]
@@ -191,11 +215,16 @@ fn default_expanded() -> bool {
     true
 }
 
+/// Returns the legacy home-directory state path.
+///
+/// The `-2` filename is intentionally stable across the crate rename so an
+/// upgrade does not discard snoozes, preferences, or window placement.
 pub fn default_state_path() -> Result<PathBuf> {
     let home = dirs::home_dir().context("could not determine the user home directory")?;
     Ok(home.join(STATE_FILENAME))
 }
 
+/// Loads state, treating absence as first run but surfacing malformed contents.
 pub fn load(path: &Path) -> Result<StateFile> {
     match fs::read(path) {
         Ok(data) => serde_json::from_slice(&data)
@@ -207,6 +236,10 @@ pub fn load(path: &Path) -> Result<StateFile> {
     }
 }
 
+/// Atomically replaces the state file with an owner-only, flushed temporary file.
+///
+/// The temporary file is created in the destination directory so the final
+/// persist operation stays on one filesystem and can use an atomic rename.
 pub fn save(path: &Path, state: &StateFile) -> Result<()> {
     let parent = path
         .parent()

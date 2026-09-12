@@ -11,6 +11,11 @@ use crate::config;
 
 const TOKEN_BYTES: usize = 32;
 
+/// Creates a new client credential and prints both client and server setup instructions.
+///
+/// The raw token is written only to the owner-only file and is never echoed;
+/// output contains the SHA-256 verifier expected by Salmon. Existing files are
+/// never replaced, which makes accidental credential rotation impossible.
 pub fn generate(
     output: &mut dyn Write,
     config_filename: &Path,
@@ -61,6 +66,10 @@ pub fn generate(
     Ok(output_filename)
 }
 
+/// Creates the secret with no-clobber semantics and removes partial writes.
+///
+/// Unix modes apply when directories/files are newly created. Pre-existing
+/// parent directories retain their existing permissions.
 fn write_new_token_file(filename: &Path, token: &[u8]) -> Result<()> {
     let parent = filename
         .parent()

@@ -6,22 +6,27 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+/// Top-level YAML configuration compatible with the original Go watcher.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Config {
     pub ws_client: WsClientConfig,
 }
 
+/// Collection of independently supervised Salmon endpoints.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WsClientConfig {
     pub servers: Vec<ServerConfig>,
 }
 
+/// One logical Salmon endpoint and its optional transport layers.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
+    /// Stable namespace used to qualify incident keys and persistence entries.
     pub id: String,
+    /// TCP `host:port`, without a URL scheme; loopback listener when tunneled.
     pub addr: String,
     #[serde(default)]
     pub tls: Option<TlsConfig>,
@@ -31,35 +36,45 @@ pub struct ServerConfig {
     pub tunnel: Option<TunnelConfig>,
 }
 
+/// TLS client verification settings.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TlsConfig {
+    /// Optional PEM CA bundle added to, rather than replacing, system roots.
     #[serde(default)]
     pub ca_file: String,
+    /// Optional verification/URI hostname when `addr` is an IP or tunnel endpoint.
     #[serde(default)]
     pub server_name: String,
 }
 
+/// Bearer authentication loaded from a file to avoid secrets in YAML and argv.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AuthConfig {
     pub bearer_token_file: String,
 }
 
+/// Tagged container retained for compatibility with the Go configuration shape.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TunnelConfig {
     pub ssh: SshTunnelConfig,
 }
 
+/// External OpenSSH local-forward configuration.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SshTunnelConfig {
+    /// SSH destination host, passed after all options to avoid option injection.
     pub host: String,
     pub user: String,
+    /// SSH port; zero in YAML means the conventional port 22.
     #[serde(default)]
     pub port: u16,
+    /// Destination visible from the SSH server, used as the `-L` target.
     pub remote_salmon_addr: String,
+    /// Trusted, user-supplied OpenSSH arguments inserted before the destination.
     #[serde(default)]
     pub extra_ssh_args: Vec<String>,
 }
@@ -74,6 +89,7 @@ impl Config {
         Ok(config)
     }
 
+    /// Validates cross-field invariants that Serde cannot express.
     pub fn validate(&self) -> Result<()> {
         let mut ids = HashSet::new();
         for (index, server) in self.ws_client.servers.iter().enumerate() {
@@ -105,6 +121,9 @@ impl Config {
     }
 }
 
+/// Validates IDs used in incident namespaces, filenames, and generated commands.
+///
+/// `internal` is reserved because client-generated incidents use that prefix.
 pub fn validate_server_id(id: &str) -> Result<()> {
     if id.is_empty() {
         bail!("is required");
@@ -139,6 +158,8 @@ fn validate_ssh_tunnel(server: &ServerConfig, ssh: &SshTunnelConfig, index: usiz
         .with_context(|| format!("{prefix}.remoteSalmonAddr"))?;
     let (local_host, _) = validate_host_port(&server.addr)
         .with_context(|| format!("wsClient.servers[{index}].addr for an SSH tunnel"))?;
+    // Binding the forwarded port beyond loopback would expose an otherwise
+    // private Salmon endpoint to other hosts on the local network.
     let loopback = local_host == "localhost"
         || local_host
             .parse::<IpAddr>()
@@ -149,6 +170,7 @@ fn validate_ssh_tunnel(server: &ServerConfig, ssh: &SshTunnelConfig, index: usiz
     Ok(())
 }
 
+/// Parses a host/port pair without accepting schemes, paths, or bare IPv6.
 fn validate_host_port(address: &str) -> Result<(&str, u16)> {
     let (host, port) = if let Some(rest) = address.strip_prefix('[') {
         let (host, port) = rest
@@ -175,6 +197,7 @@ fn validate_host_port(address: &str) -> Result<(&str, u16)> {
     Ok((host, port))
 }
 
+/// Returns the XDG configuration path used when `--config` is absent.
 pub fn default_path() -> Result<PathBuf> {
     let directory =
         dirs::config_dir().context("could not determine the user configuration directory")?;

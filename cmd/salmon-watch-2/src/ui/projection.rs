@@ -7,6 +7,11 @@ use super::{IncidentView, MainWindow, SalmonTray, ServerView};
 use crate::domain::{Incident, IncidentState, OverallState as DomainOverallState, UiSnapshot};
 use crate::tray::{FlashCycle, OverallState, TrayFlashController, TrayIcons, TrayState};
 
+/// Projects one immutable domain snapshot into stable Slint models and tray state.
+///
+/// Returns a flash token only when the rendered icon genuinely changed and the
+/// new state flashes. The caller owns timer scheduling because it has the weak
+/// component handles required to update native UI safely.
 pub fn apply_snapshot(
     window: &MainWindow,
     tray: &SalmonTray,
@@ -95,6 +100,11 @@ pub fn apply_snapshot(
     flash_cycle
 }
 
+/// Updates rows without replacing a model when length and stable identity match.
+///
+/// This is a behavioral requirement, not only an optimization: replacing models
+/// every one-second timestamp refresh closes snooze popups and loses text
+/// selection. A structural change still replaces the model in one operation.
 fn update_rows_in_place<T>(
     model: &ModelRc<T>,
     rows: &[T],
@@ -125,6 +135,7 @@ where
     true
 }
 
+/// Converts a domain incident to the integer severity contract used by Slint.
 fn incident_view(incident: &Incident, snoozed_until: Option<i64>, now_millis: i64) -> IncidentView {
     let state = match incident.state {
         IncidentState::Ok => "ok",
@@ -161,6 +172,10 @@ fn incident_view(incident: &Incident, snoozed_until: Option<i64>, now_millis: i6
     }
 }
 
+/// Accepts both RFC 3339 server timestamps and decimal Unix seconds from internal incidents.
+///
+/// Invalid values are shown verbatim so protocol/debug information is not hidden
+/// behind a generic placeholder.
 fn display_wire_time(value: &str, now_millis: i64) -> String {
     if value.is_empty() {
         return "never".into();
@@ -186,6 +201,7 @@ fn format_unix_timestamp(value: Option<i64>, now_millis: i64) -> String {
     format_timestamp_millis(value.saturating_mul(1_000), now_millis)
 }
 
+/// Heartbeat freshness buckets matching the original web UI thresholds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HeartbeatStatus {
     Normal,
@@ -193,6 +209,7 @@ enum HeartbeatStatus {
     Overdue,
 }
 
+/// Classifies absence as neutral until a heartbeat has actually been observed.
 fn heartbeat_status(value_millis: Option<i64>, now_millis: i64) -> HeartbeatStatus {
     let Some(value_millis) = value_millis else {
         return HeartbeatStatus::Normal;
@@ -207,6 +224,7 @@ fn heartbeat_status(value_millis: Option<i64>, now_millis: i64) -> HeartbeatStat
     }
 }
 
+/// Formats valid local time as compact absolute text plus a bucketed relative age.
 fn format_timestamp_millis(value_millis: i64, now_millis: i64) -> String {
     let Some(timestamp) = Local.timestamp_millis_opt(value_millis).single() else {
         return value_millis.to_string();
@@ -221,6 +239,7 @@ fn format_timestamp_millis(value_millis: i64, now_millis: i64) -> String {
     )
 }
 
+/// Omits date and year portions when they are redundant in local time.
 fn format_absolute(value: NaiveDateTime, now: NaiveDateTime) -> String {
     let time = format!(
         "{:02}:{:02}:{:02}",
@@ -246,6 +265,10 @@ fn month_name(month: u32) -> &'static str {
     MONTHS[(month.saturating_sub(1) as usize).min(MONTHS.len() - 1)]
 }
 
+/// Produces past/future wording while avoiding premature future-time buckets.
+///
+/// Past ages floor partial seconds; future ages ceil them. This mirrors the web
+/// client around zero instead of claiming a future event already occurred.
 fn format_relative(value_millis: i64, now_millis: i64) -> String {
     let elapsed_millis = i128::from(now_millis) - i128::from(value_millis);
     let future = elapsed_millis < 0;
@@ -263,6 +286,7 @@ fn format_relative(value_millis: i64, now_millis: i64) -> String {
     }
 }
 
+/// Buckets short ages at 15-second boundaries, then uses minute/hour/day precision.
 fn duration(seconds: i64) -> String {
     if seconds < 15 {
         "<15s".into()

@@ -1,5 +1,10 @@
 use super::{AppState, Effect, Event, Incident, IncidentState, Transition};
 
+/// Serial state machine for network events and user incident actions.
+///
+/// A reducer instance must be driven by one task: ordering events here avoids
+/// locks in the domain model and guarantees that a published snapshot already
+/// includes the state responsible for its effects.
 pub struct Reducer {
     state: AppState,
 }
@@ -13,6 +18,11 @@ impl Reducer {
         &self.state
     }
 
+    /// Applies one event, returning publication and side-effect instructions.
+    ///
+    /// Events for unknown server IDs are ignored defensively. Notification
+    /// `total` lists replace per-server state, while only `added` and `removed`
+    /// lists create desktop notifications.
     pub fn reduce(&mut self, event: Event) -> Transition {
         match event {
             Event::Connected { server_id, at } => self.connected(&server_id, at),
@@ -88,6 +98,8 @@ impl Reducer {
                 }
             }
             Event::ForgetStale { key } => {
+                // This is a local dismissal, not a synthetic recovery. A later
+                // authoritative snapshot may therefore restore the incident.
                 let mut changed = false;
                 for incidents in self.state.incidents.values_mut() {
                     let before = incidents.len();
@@ -114,6 +126,9 @@ impl Reducer {
         }
     }
 
+    /// Starts a fresh socket generation and resolves its connection incident.
+    /// A previous heartbeat is cleared because it cannot prove the new socket
+    /// has delivered any data.
     fn connected(&mut self, id: &str, at: i64) -> Transition {
         let incident_key = format!("internal.connection.{id}");
         let incident_is_snoozed = self.is_snoozed(&incident_key, at);
@@ -125,6 +140,7 @@ impl Reducer {
         server.connected = true;
         server.connection_changed_at = changed.then_some(at).or(server.connection_changed_at);
         if changed {
+            // A heartbeat from the previous socket says nothing about this one.
             server.last_heartbeat_at = None;
         }
         let removed = self
@@ -145,6 +161,8 @@ impl Reducer {
         }
     }
 
+    /// Marks cached server incidents stale while retaining them for context.
+    /// Repeated failures update details but notify only on incident creation.
     fn disconnected(&mut self, id: &str, at: i64, error: String) -> Transition {
         let key = format!("internal.connection.{id}");
         let incident_is_snoozed = self.is_snoozed(&key, at);
@@ -168,11 +186,15 @@ impl Reducer {
         }
         let mut effects = Vec::new();
         let internal_changed = if error.is_empty() {
+            // Tunnel failures deliberately send an empty socket error so the
+            // root-cause tunnel incident is the only visible internal failure.
             self.state.internal_incidents.remove(&key).is_some()
         } else {
             match self.state.internal_incidents.get_mut(&key) {
                 Some(incident) if incident.details == error => false,
                 Some(incident) => {
+                    // Update the card but do not emit another notification for
+                    // every retry of the same logical connection incident.
                     incident.details = error;
                     true
                 }
@@ -203,6 +225,7 @@ impl Reducer {
         }
     }
 
+    /// Resolves the tunnel incident only after SSH emitted its readiness marker.
     fn tunnel_ready(&mut self, id: &str, at: i64) -> Transition {
         if !self.state.servers.contains_key(id) {
             return Transition::default();
@@ -222,6 +245,8 @@ impl Reducer {
         }
     }
 
+    /// Makes the tunnel the sole root-cause incident and removes a concurrent,
+    /// derivative WebSocket connection failure for the same server.
     fn tunnel_failed(&mut self, id: &str, at: i64, error: String) -> Transition {
         let key = format!("internal.tunnel.{id}");
         let incident_is_snoozed = self.is_snoozed(&key, at);
@@ -297,6 +322,8 @@ impl Reducer {
         }
     }
 
+    /// Tests the deadline directly; expired entries may remain stored until the
+    /// periodic expiry event removes and persists them.
     fn is_snoozed(&self, key: &str, now: i64) -> bool {
         self.state
             .snoozed
@@ -305,6 +332,7 @@ impl Reducer {
     }
 }
 
+/// Qualifies a server-local wire key for collision-free aggregation.
 fn prefixed(item: &Incident, id: &str) -> Incident {
     let mut item = item.clone();
     item.key = format!("{id}.{}", item.key);

@@ -1,10 +1,12 @@
 use anyhow::{Context, Result};
 use notify_rust::{Notification, Urgency};
 
+/// Injectable boundary around the desktop notification service.
 pub trait NotificationSink {
     fn push(&self, title: &str, body: &str) -> Result<()>;
 }
 
+/// Production sink backed by the platform notification daemon.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DesktopNotificationSink;
 
@@ -17,6 +19,7 @@ impl NotificationSink for DesktopNotificationSink {
     }
 }
 
+/// Constructs notification metadata separately so it can be tested without delivery.
 fn desktop_notification(title: &str, body: &str) -> Notification {
     let mut notification = Notification::new();
     notification

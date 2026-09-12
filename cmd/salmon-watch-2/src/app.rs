@@ -16,6 +16,11 @@ use anyhow::{Context, Result};
 use slint::winit_030::WinitWindowAccessor;
 use slint::{CloseRequestResponse, ComponentHandle, Timer};
 
+/// Parses the process mode and dispatches setup, token generation, or the GUI.
+///
+/// Logging and Slint are initialized only for GUI mode. An explicit scale is
+/// exported before Slint or any worker thread exists; mutating the environment
+/// later would be both ineffective and unsafe in a multithreaded process.
 pub fn execute() -> Result<()> {
     let options = cli::parse(std::env::args_os().skip(1))?;
     if options.help {
@@ -61,6 +66,11 @@ pub fn execute() -> Result<()> {
     run(options.start_hidden, config_path, automatic_scale)
 }
 
+/// Constructs long-lived UI/runtime resources and performs ordered teardown.
+///
+/// The native event loop remains on the main thread; Tokio owns a separate OS
+/// thread. On exit, visible geometry is saved before networking is synchronously
+/// stopped, so a normal return means tunnels and child processes are gone.
 fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Result<()> {
     let config = Config::load(&config_path)?;
     log::info!(
@@ -141,6 +151,11 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
     Ok(())
 }
 
+/// Logs backend-selected scale after Winit has attached a real monitor.
+///
+/// The native window handle is asynchronous and some backends initially expose
+/// a 1x1 dummy monitor. The short timer moves inspection past initial creation;
+/// failures are logged rather than changing scale after layout already exists.
 fn install_scale_logging(window: &MainWindow, automatic: bool) {
     let window_weak = window.as_weak();
     if let Err(error) = slint::spawn_local(async move {
@@ -212,6 +227,10 @@ fn apply_preferences(window: &MainWindow, state: &StateFile) {
     window.set_snoozed_incidents_expanded(state.preferences.sections.snoozed_incidents_expanded);
 }
 
+/// Wires close-to-tray behavior and persists presentation changes immediately.
+///
+/// Returning `KeepWindowShown` after explicitly hiding is intentional: allowing
+/// Slint's normal close path would destroy the window and end tray-only operation.
 fn install_window_callbacks(window: &MainWindow, store: Store, geometry: WindowGeometryManager) {
     geometry.install_event_handler(window.window());
 
@@ -251,6 +270,7 @@ fn install_window_callbacks(window: &MainWindow, store: Store, geometry: WindowG
     });
 }
 
+/// Connects tray activation, menu actions, notification diagnostics, and exit.
 fn install_tray_callbacks(
     window: &MainWindow,
     tray: &SalmonTray,
@@ -316,6 +336,7 @@ fn install_tray_callbacks(
     });
 }
 
+/// Restores a minimized native window and asks the window manager for focus.
 fn activate_window(window: &slint::Window) {
     window.with_winit_window(|window| {
         window.set_minimized(false);
@@ -336,6 +357,10 @@ enum TrayToggleAction {
     Hide,
 }
 
+/// Decision separated from platform calls so the nonstandard tray UX is testable.
+///
+/// Clicking an already visible but unfocused window activates it; only a second
+/// click while focused hides it.
 fn tray_toggle_action(visible: bool, focused: bool) -> TrayToggleAction {
     match (visible, focused) {
         (false, _) => TrayToggleAction::Show,
@@ -344,6 +369,10 @@ fn tray_toggle_action(visible: bool, focused: bool) -> TrayToggleAction {
     }
 }
 
+/// Marshals the signal-handler callback onto the Slint event loop.
+///
+/// The ctrlc crate invokes handlers on its own thread, where touching Slint
+/// components directly would violate their thread affinity.
 fn install_ctrl_c_handler(tray: &SalmonTray) -> Result<()> {
     let tray_weak = tray.as_weak();
     ctrlc::set_handler(move || {
@@ -356,6 +385,11 @@ fn install_ctrl_c_handler(tray: &SalmonTray) -> Result<()> {
     .context("failed to install Ctrl+C handler")
 }
 
+/// Schedules one generation-tagged flash edge and recursively schedules the next.
+///
+/// A repeating timer would be easy to restart during the one-second UI refresh,
+/// shortening the transparent phase. The controller rejects callbacks belonging
+/// to superseded icon generations, keeping cadence stable across state updates.
 fn schedule_flash_tick(
     window: &MainWindow,
     tray: &SalmonTray,
@@ -381,6 +415,10 @@ fn schedule_flash_tick(
     });
 }
 
+/// Translates the closed Slint action vocabulary into bounded runtime commands.
+///
+/// `try_send` is deliberate on the UI thread: it must never block rendering.
+/// Saturation is exceptional and is logged rather than freezing the interface.
 fn install_incident_actions(window: &MainWindow, commands: tokio::sync::mpsc::Sender<Command>) {
     window.on_incident_action(move |key, action, argument| {
         let command = match action.as_str() {
@@ -404,7 +442,9 @@ fn install_incident_actions(window: &MainWindow, commands: tokio::sync::mpsc::Se
     });
 }
 
+/// Parses only durations exposed by the static snooze menu.
 fn parse_snooze_duration(value: &str) -> Option<i64> {
+    // TODO: Replace this fixed menu-value mapping with a general duration parser.
     Some(match value {
         "15m" => 15 * 60,
         "30m" => 30 * 60,

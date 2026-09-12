@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, anyhow};
 
+/// User-selectable maximum verbosity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogLevel {
     Trace,
@@ -40,6 +41,10 @@ impl std::str::FromStr for LogLevel {
     }
 }
 
+/// Minimal stderr logger that intentionally suppresses dependency targets.
+///
+/// Restricting targets keeps `debug` useful; libraries such as Winit, Rustls,
+/// and D-Bus can otherwise overwhelm lifecycle and protocol diagnostics.
 struct StderrLogger;
 
 impl log::Log for StderrLogger {
@@ -71,6 +76,7 @@ impl log::Log for StderrLogger {
     fn flush(&self) {}
 }
 
+/// Converts Rust module targets into the component label printed after the app name.
 fn component_name(target: &str) -> &str {
     target.strip_prefix("salmon_watch::").unwrap_or_default()
 }
@@ -78,6 +84,7 @@ fn component_name(target: &str) -> &str {
 static LOGGER: StderrLogger = StderrLogger;
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+/// Installs the process-global logger exactly once.
 pub fn init(level: LogLevel) -> Result<()> {
     log::set_logger(&LOGGER).map_err(|_| anyhow!("failed to initialize logger"))?;
     log::set_max_level(level.filter());
@@ -85,6 +92,7 @@ pub fn init(level: LogLevel) -> Result<()> {
     Ok(())
 }
 
+/// Reports whether startup errors can safely use the `log` facade.
 pub fn is_initialized() -> bool {
     INITIALIZED.load(Ordering::Acquire)
 }

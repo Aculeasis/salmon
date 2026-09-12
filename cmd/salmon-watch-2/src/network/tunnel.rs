@@ -17,14 +17,22 @@ const READY_MARKER: &str = "SALMON_TUNNEL_READY";
 const MAX_FAILURE_OUTPUT_BYTES: usize = 1024;
 const DEFAULT_RESTART_DELAY: Duration = Duration::from_secs(5);
 
+/// Executable SSH command plus the output token that proves forwarding is ready.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CommandSpec {
     pub program: String,
+    /// Complete argv without shell interpretation.
     pub args: Vec<String>,
+    /// May arrive on stdout or stderr and may span arbitrary read chunks.
     pub readiness_marker: String,
 }
 
 impl CommandSpec {
+    /// Reproduces the hardened external-OpenSSH invocation used by the Go watcher.
+    ///
+    /// `ExitOnForwardFailure` plus `LocalCommand` is the readiness protocol: the
+    /// marker is printed only after SSH has established the session and accepted
+    /// the local forward. The WebSocket must never dial before that marker.
     pub fn for_server(server: &ServerConfig) -> Option<Self> {
         let ssh = &server.tunnel.as_ref()?.ssh;
         let port = if ssh.port == 0 { 22 } else { ssh.port };
@@ -60,6 +68,12 @@ impl CommandSpec {
     }
 }
 
+/// Owns the SSH child and the WebSocket nested inside it for one server.
+///
+/// Ownership is intentionally hierarchical: the tunnel starts first, the client
+/// runs only while it is ready, and shutdown waits for both tasks and the child
+/// process. This ordering prevents leaked SSH processes and misleading socket
+/// incidents when the tunnel is the root cause.
 pub(crate) async fn run(
     server: ServerConfig,
     events: mpsc::Sender<Event>,
@@ -71,6 +85,7 @@ pub(crate) async fn run(
     log::info!("server {server_id} SSH tunnel stopped");
 }
 
+/// Supervises repeated SSH generations using an injectable command and delay.
 async fn run_with_spec(
     server: ServerConfig,
     spec: CommandSpec,
@@ -115,6 +130,7 @@ async fn run_with_spec(
             ready_tx,
         ));
 
+        /// Mutually exclusive ways the current SSH generation can leave startup.
         enum BeforeReady {
             Ready,
             Exited(io::Result<std::process::ExitStatus>),
@@ -151,6 +167,7 @@ async fn run_with_spec(
                     stop_rx,
                     true,
                 ));
+                /// First owner to finish determines teardown of the nested pair.
                 enum WhileReady {
                     Exited(io::Result<std::process::ExitStatus>),
                     ClientStopped,
@@ -214,6 +231,7 @@ async fn run_with_spec(
     }
 }
 
+/// Spawns SSH without a shell, with captured output and kill-on-drop as a backstop.
 fn spawn(spec: &CommandSpec) -> io::Result<Child> {
     let mut command = Command::new(&spec.program);
     command
@@ -227,11 +245,13 @@ fn spawn(spec: &CommandSpec) -> io::Result<Child> {
 }
 
 #[cfg(unix)]
+/// Keeps terminal Ctrl+C from killing SSH before the parent can reap it cleanly.
 fn isolate_from_terminal_signals(command: &mut Command) {
     command.process_group(0);
 }
 
 #[cfg(windows)]
+/// Gives SSH a process group distinct from the parent console process.
 fn isolate_from_terminal_signals(command: &mut Command) {
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     command.creation_flags(CREATE_NEW_PROCESS_GROUP);
@@ -240,6 +260,7 @@ fn isolate_from_terminal_signals(command: &mut Command) {
 #[cfg(not(any(unix, windows)))]
 fn isolate_from_terminal_signals(_command: &mut Command) {}
 
+/// Requests termination and then reaps the child to prevent zombies.
 async fn stop_child(child: &mut Child) {
     let _ = child.start_kill();
     let _ = child.wait().await;
@@ -264,6 +285,7 @@ async fn send_tunnel_failure(events: &mpsc::Sender<Event>, server_id: &str, erro
         .is_ok()
 }
 
+/// Joins both pipe readers and turns exit status plus bounded output into one incident body.
 async fn failure_details(
     status: io::Result<std::process::ExitStatus>,
     stdout_task: JoinHandle<CapturedOutput>,
@@ -285,6 +307,7 @@ async fn failure_details(
     details
 }
 
+/// Captured diagnostic tail from one SSH output stream.
 #[derive(Default)]
 struct CapturedOutput {
     tail: TailBuffer,
@@ -296,6 +319,10 @@ impl CapturedOutput {
     }
 }
 
+/// Drains one child pipe continuously while independently probing for readiness.
+///
+/// Both stdout and stderr must be drained concurrently: OpenSSH or user hooks can
+/// write enough output to fill either pipe and otherwise deadlock the child.
 async fn capture_output<R>(mut reader: R, marker: String, ready: mpsc::Sender<()>) -> CapturedOutput
 where
     R: AsyncRead + Unpin,
@@ -324,9 +351,12 @@ where
     output
 }
 
+/// Streaming exact-substring matcher that handles a marker split across reads.
 struct ProbeMatcher {
     probe: Vec<u8>,
+    /// At most `probe.len() - 1` trailing bytes needed for the next boundary.
     tail: Vec<u8>,
+    /// Makes notification edge-triggered even if the marker is printed repeatedly.
     complete: bool,
 }
 
@@ -339,6 +369,7 @@ impl ProbeMatcher {
         }
     }
 
+    /// Feeds one chunk and returns true exactly once when the probe first appears.
     fn push(&mut self, bytes: &[u8]) -> bool {
         if self.complete {
             return false;
@@ -360,13 +391,17 @@ impl ProbeMatcher {
     }
 }
 
+/// Bounded suffix buffer used to keep incident details useful without unbounded RAM.
 #[derive(Default)]
 struct TailBuffer {
     bytes: Vec<u8>,
+    /// Records loss even if subsequent chunks fit, so rendered text shows an ellipsis.
     truncated: bool,
 }
 
 impl TailBuffer {
+    /// Appends output while retaining only the newest bytes, which tend to hold
+    /// SSH's final and most useful diagnostic.
     fn push(&mut self, bytes: &[u8]) {
         if bytes.len() >= MAX_FAILURE_OUTPUT_BYTES {
             self.bytes = bytes[bytes.len() - MAX_FAILURE_OUTPUT_BYTES..].to_vec();
@@ -385,6 +420,8 @@ impl TailBuffer {
         self.bytes.extend_from_slice(bytes);
     }
 
+    /// Decodes even malformed process output lossily and marks a discarded
+    /// prefix so the resulting incident is not mistaken for complete output.
     fn text(&self) -> String {
         let text = String::from_utf8_lossy(&self.bytes).trim().to_owned();
         if self.truncated && !text.is_empty() {
@@ -395,6 +432,7 @@ impl TailBuffer {
     }
 }
 
+/// Selects human diagnostics, preferring stderr, and strips protocol-only marker lines.
 fn failure_output(stderr: &str, stdout: &str, readiness_marker: &str) -> String {
     fn clean(output: &str, marker: &str) -> String {
         output

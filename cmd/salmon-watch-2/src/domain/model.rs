@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+/// Severity reported by Salmon for one monitored item.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IncidentState {
@@ -10,36 +11,54 @@ pub enum IncidentState {
     Error,
 }
 
+/// Normalized incident shared by wire decoding, the reducer, and UI projection.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Incident {
+    /// Stable item identity. Server incidents are prefixed locally with the server ID.
     pub key: String,
     pub state: IncidentState,
     #[serde(default)]
     pub details: String,
+    /// RFC 3339 on the wire; locally synthesized incidents use Unix seconds as text.
     pub incident_started_at: String,
+    /// True when retained from the last snapshot after its server disconnected.
     #[serde(default)]
     pub stale: bool,
 }
 
+/// Authoritative incident state plus the transition deltas supplied by Salmon.
+///
+/// `total` replaces the cached state. The delta lists drive logging and desktop
+/// notifications; they must not be reconstructed by diffing `total` because the
+/// server owns transition semantics.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NotificationData {
     pub total: Vec<Incident>,
     pub added: Vec<Incident>,
     pub removed: Vec<Incident>,
     pub updated: Vec<Incident>,
+    /// Informational server count used in synchronization logs, not UI severity.
     pub num_items_ok: usize,
 }
 
+/// Connection metadata retained independently from incident state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServerStatus {
     pub id: String,
     pub connected: bool,
+    /// Distinguishes startup/unknown from a connection known to be offline.
     pub initialized: bool,
+    /// Unix seconds of the last connected/disconnected transition.
     pub connection_changed_at: Option<i64>,
+    /// Unix seconds when the client received the latest heartbeat frame.
     pub last_heartbeat_at: Option<i64>,
 }
 
+/// Aggregated state used by the window and tray.
+///
+/// `InternalError` is deliberately distinct (magenta) and ranks below a real
+/// warning or error reported by a monitored system.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OverallState {
     Unknown,
@@ -49,28 +68,40 @@ pub enum OverallState {
     Error,
 }
 
+/// Incident paired with its exclusive Unix-second snooze deadline.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnoozedIncident {
     pub incident: Incident,
     pub until: i64,
 }
 
+/// Immutable, display-ready view of domain state published to the UI thread.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UiSnapshot {
     pub servers: Vec<ServerStatus>,
     pub active: Vec<Incident>,
     pub snoozed: Vec<SnoozedIncident>,
+    /// Severity of visible incidents, or `Unknown` while any server is uninitialized.
     pub alerting_state: OverallState,
+    /// Highest hidden severity; absent when no current incident is snoozed.
     pub snoozed_state: Option<OverallState>,
     pub unknown_server_count: usize,
 }
 
+/// Reducer-owned canonical state.
+///
+/// Keeping this independent of Slint and Tokio makes event ordering and all
+/// alerting decisions deterministic and directly testable.
 #[derive(Clone, Debug)]
 pub struct AppState {
+    /// Configuration order, preserved because `HashMap` iteration is unstable.
     pub(crate) server_order: Vec<String>,
     pub(crate) servers: HashMap<String, ServerStatus>,
+    /// Last authoritative snapshot per configured server.
     pub(crate) incidents: HashMap<String, Vec<Incident>>,
+    /// Client-generated connection and tunnel failures keyed by `internal.*`.
     pub(crate) internal_incidents: BTreeMap<String, Incident>,
+    /// Incident key to exclusive Unix-second deadline, including currently absent items.
     pub(crate) snoozed: BTreeMap<String, i64>,
 }
 
@@ -104,6 +135,10 @@ impl AppState {
         &self.snoozed
     }
 
+    /// Projects canonical state while classifying snoozes at `now` (Unix seconds).
+    ///
+    /// Expired entries are treated as active here but are removed only by a
+    /// [`crate::domain::Event::Tick`], keeping projection side-effect free.
     pub fn snapshot(&self, now: i64) -> UiSnapshot {
         let mut incidents: Vec<_> = self.internal_incidents.values().cloned().collect();
         for id in &self.server_order {
@@ -155,6 +190,9 @@ impl AppState {
     }
 }
 
+/// Reduces incident severity using the tray/UI precedence rather than enum
+/// declaration order. Internal failures deliberately retain their own visual
+/// state unless a real warning or error is present.
 fn overall_state(items: &[Incident]) -> OverallState {
     items.iter().fold(OverallState::Ok, |overall, item| {
         let current = if item.key.starts_with("internal.") && item.state != IncidentState::Ok {
