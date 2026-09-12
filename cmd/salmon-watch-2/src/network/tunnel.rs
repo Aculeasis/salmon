@@ -6,7 +6,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 use crate::config::ServerConfig;
 use crate::domain::Event;
@@ -16,6 +16,8 @@ use super::client::run_connection_loop;
 const READY_MARKER: &str = "SALMON_TUNNEL_READY";
 const MAX_FAILURE_OUTPUT_BYTES: usize = 1024;
 const DEFAULT_RESTART_DELAY: Duration = Duration::from_secs(5);
+/// Matches Go's `exec.Cmd.WaitDelay` for inherited tunnel output pipes.
+const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Executable tunnel command plus an optional output token proving readiness.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -136,6 +138,9 @@ async fn run_with_spec(
                 continue;
             }
         };
+        // On Unix this is also the process-group ID because `spawn` assigns the
+        // child as leader. Keep it after `wait`, when `Child::id()` becomes `None`.
+        let process_group_id = child.id();
 
         let stdout = child.stdout.take().expect("tunnel stdout is piped");
         let stderr = child.stderr.take().expect("tunnel stderr is piped");
@@ -180,9 +185,14 @@ async fn run_with_spec(
                     .await
                     .is_err()
                 {
-                    stop_child(&mut child).await;
-                    let _ = stdout_task.await;
-                    let _ = stderr_task.await;
+                    stop_generation(
+                        &server.id,
+                        &mut child,
+                        process_group_id,
+                        stdout_task,
+                        stderr_task,
+                    )
+                    .await;
                     return;
                 }
                 let (stop_tx, stop_rx) = watch::channel(false);
@@ -207,7 +217,9 @@ async fn run_with_spec(
                 match outcome {
                     WhileReady::Exited(status) => {
                         let _ = connection.await;
+                        terminate_process_group(process_group_id);
                         let details = failure_details(
+                            &server.id,
                             status,
                             stdout_task,
                             stderr_task,
@@ -222,22 +234,34 @@ async fn run_with_spec(
                         }
                     }
                     WhileReady::ClientStopped => {
-                        stop_child(&mut child).await;
-                        let _ = stdout_task.await;
-                        let _ = stderr_task.await;
+                        stop_generation(
+                            &server.id,
+                            &mut child,
+                            process_group_id,
+                            stdout_task,
+                            stderr_task,
+                        )
+                        .await;
                         return;
                     }
                     WhileReady::Shutdown => {
                         let _ = connection.await;
-                        stop_child(&mut child).await;
-                        let _ = stdout_task.await;
-                        let _ = stderr_task.await;
+                        stop_generation(
+                            &server.id,
+                            &mut child,
+                            process_group_id,
+                            stdout_task,
+                            stderr_task,
+                        )
+                        .await;
                         return;
                     }
                 }
             }
             BeforeReady::Exited(status) => {
+                terminate_process_group(process_group_id);
                 let details = failure_details(
+                    &server.id,
                     status,
                     stdout_task,
                     stderr_task,
@@ -252,9 +276,14 @@ async fn run_with_spec(
                 }
             }
             BeforeReady::Shutdown => {
-                stop_child(&mut child).await;
-                let _ = stdout_task.await;
-                let _ = stderr_task.await;
+                stop_generation(
+                    &server.id,
+                    &mut child,
+                    process_group_id,
+                    stdout_task,
+                    stderr_task,
+                )
+                .await;
                 return;
             }
         }
@@ -290,11 +319,50 @@ fn isolate_from_terminal_signals(command: &mut Command) {
 #[cfg(not(any(unix, windows)))]
 fn isolate_from_terminal_signals(_command: &mut Command) {}
 
-/// Requests termination and then reaps the child to prevent zombies.
-async fn stop_child(child: &mut Child) {
+/// Kills and reaps one command generation, then bounds output-pipe cleanup.
+async fn stop_generation(
+    server_id: &str,
+    child: &mut Child,
+    process_group_id: Option<u32>,
+    stdout_task: JoinHandle<CapturedOutput>,
+    stderr_task: JoinHandle<CapturedOutput>,
+) {
+    stop_child(child, process_group_id).await;
+    let output = drain_output_readers(stdout_task, stderr_task).await;
+    if output.timed_out {
+        log::warn!(
+            "server {server_id} tunnel output pipes remained open after termination; continuing teardown"
+        );
+    }
+}
+
+/// Requests tree termination where supported and reaps the direct child.
+async fn stop_child(child: &mut Child, process_group_id: Option<u32>) {
+    terminate_process_group(process_group_id);
     let _ = child.start_kill();
     let _ = child.wait().await;
 }
+
+#[cfg(unix)]
+/// Kills descendants that inherited the isolated tunnel process group.
+fn terminate_process_group(process_group_id: Option<u32>) {
+    let Some(process_group_id) = process_group_id.and_then(|id| libc::pid_t::try_from(id).ok())
+    else {
+        return;
+    };
+    // SAFETY: `spawn` created a new group whose PGID is the captured child PID.
+    // A negative PID asks `kill` to signal every process remaining in that group.
+    if unsafe { libc::kill(-process_group_id, libc::SIGKILL) } != 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            log::warn!("failed to kill tunnel process group {process_group_id}: {error}");
+        }
+    }
+}
+
+#[cfg(not(unix))]
+/// Other platforms rely on direct-child termination plus bounded pipe draining.
+fn terminate_process_group(_process_group_id: Option<u32>) {}
 
 async fn wait_to_restart(shutdown: &mut watch::Receiver<bool>, delay: Duration) -> bool {
     log::info!("tunnel will restart in {}s", delay.as_secs_f64());
@@ -317,24 +385,82 @@ async fn send_tunnel_failure(events: &mpsc::Sender<Event>, server_id: &str, erro
 
 /// Joins both pipe readers and turns exit status plus bounded output into one incident body.
 async fn failure_details(
+    server_id: &str,
     status: io::Result<std::process::ExitStatus>,
     stdout_task: JoinHandle<CapturedOutput>,
     stderr_task: JoinHandle<CapturedOutput>,
     readiness_probe: Option<&str>,
 ) -> String {
-    let stdout = stdout_task.await.unwrap_or_default();
-    let stderr = stderr_task.await.unwrap_or_default();
+    let output = drain_output_readers(stdout_task, stderr_task).await;
     let mut details = match status {
         Ok(status) if status.success() => "Tunnel command exited unexpectedly".to_owned(),
         Ok(status) => format!("Tunnel command exited: {status}"),
         Err(error) => format!("Waiting for tunnel command failed: {error}"),
     };
-    let output = failure_output(&stderr.text(), &stdout.text(), readiness_probe);
-    if !output.is_empty() {
+    if output.timed_out {
+        log::warn!(
+            "server {server_id} tunnel output pipes remained open after command exit; continuing restart"
+        );
+        details.push_str("\n\nTunnel output pipes remained open after the command exited");
+    }
+    let failure_output = failure_output(
+        &output.stderr.text(),
+        &output.stdout.text(),
+        readiness_probe,
+    );
+    if !failure_output.is_empty() {
         details.push_str("\n\n");
-        details.push_str(&output);
+        details.push_str(&failure_output);
     }
     details
+}
+
+/// Output retained from readers that finished before the common deadline.
+struct DrainedOutput {
+    stdout: CapturedOutput,
+    stderr: CapturedOutput,
+    /// At least one inherited pipe remained open after the direct child ended.
+    timed_out: bool,
+}
+
+/// Waits concurrently for both pipes, aborting either reader after one second.
+async fn drain_output_readers(
+    stdout_task: JoinHandle<CapturedOutput>,
+    stderr_task: JoinHandle<CapturedOutput>,
+) -> DrainedOutput {
+    drain_output_readers_with_timeout(stdout_task, stderr_task, OUTPUT_DRAIN_TIMEOUT).await
+}
+
+/// Injectable-timeout implementation used by the inherited-pipe regression test.
+async fn drain_output_readers_with_timeout(
+    stdout_task: JoinHandle<CapturedOutput>,
+    stderr_task: JoinHandle<CapturedOutput>,
+    deadline: Duration,
+) -> DrainedOutput {
+    let (stdout, stderr) = tokio::join!(
+        drain_output_reader(stdout_task, deadline),
+        drain_output_reader(stderr_task, deadline),
+    );
+    DrainedOutput {
+        stdout: stdout.0,
+        stderr: stderr.0,
+        timed_out: stdout.1 || stderr.1,
+    }
+}
+
+/// Returns captured output or aborts a reader whose inherited pipe never closes.
+async fn drain_output_reader(
+    mut task: JoinHandle<CapturedOutput>,
+    deadline: Duration,
+) -> (CapturedOutput, bool) {
+    match timeout(deadline, &mut task).await {
+        Ok(result) => (result.unwrap_or_default(), false),
+        Err(_) => {
+            task.abort();
+            let _ = task.await;
+            (CapturedOutput::default(), true)
+        }
+    }
 }
 
 /// Captured diagnostic tail from one tunnel-process output stream.
@@ -654,6 +780,20 @@ mod tests {
         assert!(text.len() <= MAX_FAILURE_OUTPUT_BYTES + '…'.len_utf8());
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn output_reader_deadline_aborts_a_pipe_that_never_closes() {
+        let stdout_task = tokio::spawn(std::future::pending::<CapturedOutput>());
+        let stderr_task = tokio::spawn(async { CapturedOutput::default() });
+
+        let output =
+            drain_output_readers_with_timeout(stdout_task, stderr_task, Duration::from_millis(10))
+                .await;
+
+        assert!(output.timed_out);
+        assert!(output.stdout.text().is_empty());
+        assert!(output.stderr.text().is_empty());
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn websocket_dial_waits_for_marker_from_stderr() {
@@ -779,6 +919,90 @@ mod tests {
         timeout(Duration::from_secs(3), task)
             .await
             .expect("tunnel task did not stop")
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn background_child_inheriting_pipes_does_not_block_failure_or_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let attempted = directory.path().join("attempted");
+        let server = plain_server("127.0.0.1:9".into());
+        let spec = CommandSpec {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                format!(
+                    r#"if [ -e "$1" ]; then echo {READY_MARKER}; exec sleep 30; fi
+: > "$1"
+sleep 30 &
+echo leader-exited >&2
+exit 7"#
+                ),
+                "sh".into(),
+                attempted.to_string_lossy().into_owned(),
+            ],
+            readiness_probe: Some(READY_MARKER.into()),
+        };
+        let (events_tx, mut events_rx) = mpsc::channel(16);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(run_with_spec(
+            server,
+            spec,
+            events_tx,
+            shutdown_rx,
+            Duration::from_millis(10),
+        ));
+
+        let failure = timeout(Duration::from_secs(3), events_rx.recv())
+            .await
+            .expect("inherited output pipes blocked tunnel failure")
+            .unwrap();
+        assert!(matches!(
+            failure,
+            Event::TunnelFailed { error, .. } if error.contains("leader-exited")
+        ));
+        let ready = timeout(Duration::from_secs(3), events_rx.recv())
+            .await
+            .expect("inherited output pipes blocked tunnel restart")
+            .unwrap();
+        assert!(matches!(ready, Event::TunnelReady { .. }));
+
+        shutdown_tx.send(true).unwrap();
+        timeout(Duration::from_secs(3), task)
+            .await
+            .expect("restarted tunnel did not stop")
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn background_child_inheriting_pipes_does_not_block_shutdown() {
+        let server = plain_server("127.0.0.1:9".into());
+        let spec = CommandSpec {
+            program: "sh".into(),
+            args: vec!["-c".into(), "sleep 30 & wait".into()],
+            readiness_probe: None,
+        };
+        let (events_tx, mut events_rx) = mpsc::channel(16);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(run_with_spec(
+            server,
+            spec,
+            events_tx,
+            shutdown_rx,
+            Duration::from_secs(60),
+        ));
+
+        let ready = timeout(Duration::from_secs(3), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(ready, Event::TunnelReady { .. }));
+        shutdown_tx.send(true).unwrap();
+        timeout(Duration::from_secs(3), task)
+            .await
+            .expect("inherited output pipes blocked tunnel shutdown")
             .unwrap();
     }
 
