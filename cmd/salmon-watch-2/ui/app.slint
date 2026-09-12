@@ -221,7 +221,6 @@ component TableHeaderText inherits Rectangle {
 component IncidentCard inherits VerticalLayout {
     in property <IncidentView> incident;
     in property <brush> foreground-color;
-    in property <brush> border-color-value;
     in property <brush> disconnected-color;
     in property <brush> warning-color;
     in property <brush> stale-color;
@@ -285,10 +284,14 @@ component IncidentCard inherits VerticalLayout {
         Rectangle { horizontal-stretch: 1; }
     }
 
-    Rectangle {
-        height: 1px;
-        background: root.border-color-value;
-    }
+}
+
+component IncidentSeparator inherits Rectangle {
+    in property <brush> line-color;
+    min-height: 1px;
+    preferred-height: 1px;
+    max-height: 1px;
+    background: root.line-color;
 }
 
 export component MainWindow inherits Window {
@@ -436,15 +439,18 @@ export component MainWindow inherits Window {
                     text: "No ongoing incidents.";
                     color: root.foreground-color;
                 }
-                for incident in root.active-incidents: IncidentCard {
-                    incident: incident;
-                    foreground-color: root.foreground-color;
-                    border-color-value: root.border-color-value;
-                    disconnected-color: root.disconnected-color;
-                    warning-color: root.warning-color;
-                    stale-color: root.stale-color;
-                    dark-theme: root.dark-theme;
-                    action(action, argument) => { root.incident-action(incident.key, action, argument); }
+                for incident in root.active-incidents: VerticalLayout {
+                    spacing: 8px;
+                    IncidentCard {
+                        incident: incident;
+                        foreground-color: root.foreground-color;
+                        disconnected-color: root.disconnected-color;
+                        warning-color: root.warning-color;
+                        stale-color: root.stale-color;
+                        dark-theme: root.dark-theme;
+                        action(action, argument) => { root.incident-action(incident.key, action, argument); }
+                    }
+                    IncidentSeparator { line-color: root.border-color-value; }
                 }
             }
 
@@ -463,27 +469,30 @@ export component MainWindow inherits Window {
                     text: "No snoozed incidents.";
                     color: root.foreground-color;
                 }
-                for incident in root.snoozed-incidents: Rectangle {
-                    min-height: card.preferred-height + 8px;
-                    preferred-height: card.preferred-height + 8px;
-                    max-height: card.preferred-height + 8px;
-                    background: root.surface-color;
-                    border-radius: 4px;
+                for incident in root.snoozed-incidents: VerticalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        min-height: card.preferred-height + 8px;
+                        preferred-height: card.preferred-height + 8px;
+                        max-height: card.preferred-height + 8px;
+                        background: root.surface-color;
+                        border-radius: 4px;
 
-                    card := IncidentCard {
-                        x: 4px;
-                        y: 4px;
-                        width: parent.width - 8px;
-                        height: parent.height - 8px;
-                        incident: incident;
-                        foreground-color: root.foreground-color;
-                        border-color-value: root.border-color-value;
-                        disconnected-color: root.disconnected-color;
-                        warning-color: root.warning-color;
-                        stale-color: root.stale-color;
-                        dark-theme: root.dark-theme;
-                        action(action, argument) => { root.incident-action(incident.key, action, argument); }
+                        card := IncidentCard {
+                            x: 4px;
+                            y: 4px;
+                            width: parent.width - 8px;
+                            height: parent.height - 8px;
+                            incident: incident;
+                            foreground-color: root.foreground-color;
+                            disconnected-color: root.disconnected-color;
+                            warning-color: root.warning-color;
+                            stale-color: root.stale-color;
+                            dark-theme: root.dark-theme;
+                            action(action, argument) => { root.incident-action(incident.key, action, argument); }
+                        }
                     }
+                    IncidentSeparator { line-color: root.border-color-value; }
                 }
             }
         }
