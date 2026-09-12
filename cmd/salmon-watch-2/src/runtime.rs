@@ -212,7 +212,7 @@ pub enum Command {
     /// Relative duration is converted to an absolute deadline on the runtime thread.
     Snooze {
         key: String,
-        seconds: i64,
+        duration: time::Duration,
     },
     Unsnooze {
         key: String,
@@ -454,9 +454,9 @@ async fn run_async(
 /// Converts a relative UI action at the last responsible moment.
 fn command_event(command: Command) -> Event {
     match command {
-        Command::Snooze { key, seconds } => Event::Snooze {
+        Command::Snooze { key, duration } => Event::Snooze {
             key,
-            until: wall_clock_now().saturating_add(time::Duration::seconds(seconds)),
+            until: wall_clock_now().saturating_add(duration),
         },
         Command::Unsnooze { key } => Event::Unsnooze { key },
         Command::ForgetStale { key } => Event::ForgetStale { key },

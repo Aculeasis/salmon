@@ -429,9 +429,9 @@ fn schedule_flash_tick(
 fn install_incident_actions(window: &MainWindow, commands: tokio::sync::mpsc::Sender<Command>) {
     window.on_incident_action(move |key, action, argument| {
         let command = match action.as_str() {
-            "snooze" => parse_snooze_duration(&argument).map(|seconds| Command::Snooze {
+            "snooze" => parse_snooze_duration(&argument).map(|duration| Command::Snooze {
                 key: key.to_string(),
-                seconds,
+                duration,
             }),
             "unsnooze" => Some(Command::Unsnooze {
                 key: key.to_string(),
@@ -450,18 +450,18 @@ fn install_incident_actions(window: &MainWindow, commands: tokio::sync::mpsc::Se
 }
 
 /// Parses only durations exposed by the static snooze menu.
-fn parse_snooze_duration(value: &str) -> Option<i64> {
+fn parse_snooze_duration(value: &str) -> Option<time::Duration> {
     // TODO: Replace this fixed menu-value mapping with a general duration parser.
     Some(match value {
-        "15m" => 15 * 60,
-        "30m" => 30 * 60,
-        "1h" => 60 * 60,
-        "4h" => 4 * 60 * 60,
-        "6h" => 6 * 60 * 60,
-        "12h" => 12 * 60 * 60,
-        "1d" => 24 * 60 * 60,
-        "2d" => 2 * 24 * 60 * 60,
-        "7d" => 7 * 24 * 60 * 60,
+        "15m" => time::Duration::minutes(15),
+        "30m" => time::Duration::minutes(30),
+        "1h" => time::Duration::hours(1),
+        "4h" => time::Duration::hours(4),
+        "6h" => time::Duration::hours(6),
+        "12h" => time::Duration::hours(12),
+        "1d" => time::Duration::days(1),
+        "2d" => time::Duration::days(2),
+        "7d" => time::Duration::days(7),
         _ => return None,
     })
 }
@@ -492,6 +492,24 @@ mod tests {
             super::tray_toggle_action(true, true),
             TrayToggleAction::Hide
         );
+    }
+
+    #[test]
+    fn parses_snooze_menu_durations_with_explicit_units() {
+        for (value, expected) in [
+            ("15m", time::Duration::minutes(15)),
+            ("30m", time::Duration::minutes(30)),
+            ("1h", time::Duration::hours(1)),
+            ("4h", time::Duration::hours(4)),
+            ("6h", time::Duration::hours(6)),
+            ("12h", time::Duration::hours(12)),
+            ("1d", time::Duration::days(1)),
+            ("2d", time::Duration::days(2)),
+            ("7d", time::Duration::days(7)),
+        ] {
+            assert_eq!(super::parse_snooze_duration(value), Some(expected));
+        }
+        assert_eq!(super::parse_snooze_duration("later"), None);
     }
 
     #[test]
