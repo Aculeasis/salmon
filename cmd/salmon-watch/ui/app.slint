@@ -301,8 +301,9 @@ export component MainWindow inherits Window {
     // Slint's default is 12px. Increase body, table, incident, and control
     // typography somewhat.
     default-font-size: 13px;
-    preferred-width: 860px;
-    preferred-height: 700px;
+    // Used only when persisted window geometry is unavailable.
+    preferred-width: 765px;
+    preferred-height: 500px;
     min-width: 260px;
     min-height: 180px;
     background: dark-theme ? #171717 : #ffffff;
