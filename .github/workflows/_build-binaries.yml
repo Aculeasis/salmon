@@ -1,4 +1,4 @@
-name: build-binaries
+name: binaries
 
 on:
   workflow_call:
@@ -21,8 +21,8 @@ permissions:
   id-token: write
 
 jobs:
-  build-salmon:
-    name: Build salmon (Linux)
+  salmon:
+    name: salmon (Linux)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -76,8 +76,8 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ inputs.retention_days }}
 
-  build-salmon-watch-legacy:
-    name: Build salmon-watch-legacy (${{ matrix.os }})
+  watch-legacy:
+    name: salmon-watch-legacy (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -170,8 +170,8 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ inputs.retention_days }}
 
-  build-salmon-watch:
-    name: Build salmon-watch (${{ matrix.os }})
+  watch:
+    name: salmon-watch (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -270,12 +270,12 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ inputs.retention_days }}
 
-  assemble-artifacts:
-    name: Assemble release artifacts
+  assemble:
+    name: Assemble
     needs:
-      - build-salmon
-      - build-salmon-watch-legacy
-      - build-salmon-watch
+      - salmon
+      - watch-legacy
+      - watch
     runs-on: ubuntu-latest
     permissions:
       actions: write

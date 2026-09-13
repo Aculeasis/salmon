@@ -27,7 +27,7 @@ jobs:
           release-type: go
           target-branch: ${{ github.ref_name }}
 
-  build-binaries:
+  binaries:
     needs: release-please
     if: needs.release-please.outputs.releases_created == 'true'
     permissions:
@@ -44,7 +44,7 @@ jobs:
     name: Attach binaries to release
     needs:
       - release-please
-      - build-binaries
+      - binaries
     runs-on: ubuntu-latest
     permissions:
       contents: write

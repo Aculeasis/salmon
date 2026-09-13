@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 jobs:
-  build-binaries:
+  binaries:
     permissions:
       actions: write
       contents: read
