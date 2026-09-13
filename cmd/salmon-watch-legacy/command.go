@@ -45,8 +45,10 @@ func newWatchRootCommand() *cobra.Command {
 				Clock: clk,
 				Sinks: []logs.LoggerSinkParams{{MinLevel: minLogLevel}},
 			}).WithNamespaceAppended("SalmonWatch")
-			app := &watchApp{config: cfg, clock: clk, logger: logger}
-			app.run()
+			app := &watchApp{config: cfg, configPath: configFilename, clock: clk, logger: logger}
+			if app.run() {
+				return restartCurrentProcess()
+			}
 			return nil
 		},
 	}

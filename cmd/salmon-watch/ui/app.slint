@@ -510,6 +510,7 @@ export component SalmonTray inherits SystemTrayIcon {
     callback toggle-window();
     callback open-window();
     callback example-notification();
+    callback restart();
     callback exit();
 
     icon: root.tray-icon;
@@ -527,6 +528,10 @@ export component SalmonTray inherits SystemTrayIcon {
             activated => { root.example-notification(); }
         }
         MenuSeparator { }
+        MenuItem {
+            title: "Restart and reload configuration";
+            activated => { root.restart(); }
+        }
         MenuItem {
             title: "Exit";
             activated => { root.exit(); }

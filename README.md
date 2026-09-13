@@ -167,8 +167,9 @@ on `127.0.0.1`.
           remoteSalmonAddr: 127.0.0.1:41990
 ```
 
-And restart `salmon-watch`. Open its web UI and verify that the list of servers
-now includes your newly added remote server as well.
+And restart `salmon-watch` (right-click on the tray icon -> "Restart and reload
+configuration"). Open its web UI and verify that the list of servers now
+includes your newly added remote server as well.
 
 You may still set an explicit loopback `addr` when a fixed local forwarding
 port is useful.

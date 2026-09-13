@@ -2,10 +2,79 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
 )
+
+type restartTestNotifier struct {
+	title string
+	body  string
+}
+
+func (n *restartTestNotifier) Push(title, body string) {
+	n.title = title
+	n.body = body
+}
+
+func TestRestartConfigValidationNotifiesAndKeepsRunningForInvalidConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "salmon-watch.yml")
+	if err := os.WriteFile(configPath, []byte("wsClient: [invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notify := &restartTestNotifier{}
+
+	if restartConfigIsValid(configPath, notify, watchTestLogger) {
+		t.Fatal("invalid configuration was accepted")
+	}
+	if notify.title != "Configuration reload failed" {
+		t.Fatalf("notification title = %q", notify.title)
+	}
+	if notify.body == "" {
+		t.Fatal("notification omitted configuration error")
+	}
+}
+
+func TestRestartConfigValidationAcceptsValidConfigWithoutNotification(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "salmon-watch.yml")
+	config := "wsClient:\n  servers:\n    - id: local\n      addr: localhost:8080\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notify := &restartTestNotifier{}
+
+	if !restartConfigIsValid(configPath, notify, watchTestLogger) {
+		t.Fatal("valid configuration was rejected")
+	}
+	if notify.title != "" || notify.body != "" {
+		t.Fatalf("unexpected notification: %q: %q", notify.title, notify.body)
+	}
+}
+
+func TestRestartCommandPreservesExecutableArgumentsAndStreams(t *testing.T) {
+	arguments := []string{
+		"/opt/salmon-watch-legacy",
+		"--config", "/tmp/custom config.yml",
+		"--log-level", "debug",
+	}
+	command := newRestartCommand("/opt/salmon-watch-legacy", arguments)
+
+	if command.Path != "/opt/salmon-watch-legacy" {
+		t.Fatalf("command path = %q", command.Path)
+	}
+	if len(command.Args) != len(arguments) {
+		t.Fatalf("command args = %#v, want %#v", command.Args, arguments)
+	}
+	for i := range arguments {
+		if command.Args[i] != arguments[i] {
+			t.Fatalf("command args = %#v, want %#v", command.Args, arguments)
+		}
+	}
+	if command.Stdin != os.Stdin || command.Stdout != os.Stdout || command.Stderr != os.Stderr {
+		t.Fatal("restart command did not preserve standard streams")
+	}
+}
 
 func TestWatchTerminationSignalRequestsTrayExit(t *testing.T) {
 	signals := make(chan os.Signal, 1)

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/benbjohnson/clock"
@@ -21,15 +22,17 @@ import (
 // watchApp owns the configuration and lifecycle state of one tray instance.
 type watchApp struct {
 	config       *config
+	configPath   string
 	clock        clock.Clock
 	logger       *logs.Logger
 	core         *salmonWatchCore
 	statusServer *localStatusServer
+	restart      atomic.Bool
 }
 
 // run starts the tray and turns SIGINT or SIGTERM into a normal tray exit, so
 // onExit gets a chance to tear down every owned resource.
-func (app *watchApp) run() {
+func (app *watchApp) run() bool {
 	terminationSignals := make(chan os.Signal, 1)
 	signal.Notify(terminationSignals, syscall.SIGINT, syscall.SIGTERM)
 	stopSignalHandler := make(chan struct{})
@@ -47,6 +50,7 @@ func (app *watchApp) run() {
 
 	signal.Stop(terminationSignals)
 	close(stopSignalHandler)
+	return app.restart.Load()
 }
 
 // waitForWatchTerminationSignal invokes onSignal for the first termination
@@ -72,6 +76,7 @@ func (app *watchApp) onReady() {
 	}
 
 	mitemStatus := systray.AddMenuItem(trayStatusTitle(trayState{}), "")
+	mitemRestart := systray.AddMenuItem("Restart and reload configuration", "")
 	mitemExit := systray.AddMenuItem("Exit", "")
 
 	notify := newDesktopNotificationSink()
@@ -123,11 +128,29 @@ func (app *watchApp) onReady() {
 			case <-mitemStatus.ClickedCh:
 				open.Run(fmt.Sprintf("http://localhost:%d/status", port))
 
+			case <-mitemRestart.ClickedCh:
+				if !restartConfigIsValid(app.configPath, notify, app.logger) {
+					continue
+				}
+				app.restart.Store(true)
+				systray.Quit()
+
 			case <-mitemExit.ClickedCh:
 				systray.Quit()
 			}
 		}
 	}()
+}
+
+// restartConfigIsValid keeps the working instance alive when an edited config
+// cannot be loaded, and reports the reason through both normal user channels.
+func restartConfigIsValid(configPath string, notify notificator, logger *logs.Logger) bool {
+	if _, err := loadConfig(configPath); err != nil {
+		logger.Log(logs.Error, "Configuration reload failed: %s", err)
+		notify.Push("Configuration reload failed", err.Error())
+		return false
+	}
+	return true
 }
 
 // watchConfigReadError adds setup guidance when the default configuration is

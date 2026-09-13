@@ -1,4 +1,7 @@
+use std::cell::Cell;
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,6 +19,12 @@ use crate::window_geometry::WindowGeometryManager;
 use anyhow::{Context, Result};
 use slint::winit_030::WinitWindowAccessor;
 use slint::{CloseRequestResponse, ComponentHandle, Timer};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RunOutcome {
+    Exit,
+    Restart,
+}
 
 /// Parses the process mode and dispatches setup, token generation, or the GUI.
 ///
@@ -62,7 +71,10 @@ pub fn execute() -> Result<()> {
         unsafe { std::env::set_var("SLINT_SCALE_FACTOR", scale.to_string()) };
     }
     let config_path = options.config.unwrap_or(config::default_path()?);
-    run(options.start_hidden, config_path, automatic_scale)
+    if run(options.start_hidden, config_path, automatic_scale)? == RunOutcome::Restart {
+        restart_current_process()?;
+    }
+    Ok(())
 }
 
 /// Constructs long-lived UI/runtime resources and performs ordered teardown.
@@ -70,7 +82,7 @@ pub fn execute() -> Result<()> {
 /// The native event loop remains on the main thread; Tokio owns a separate OS
 /// thread. On exit, visible geometry is saved before networking is synchronously
 /// stopped, so a normal return means tunnels and child processes are gone.
-fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Result<()> {
+fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Result<RunOutcome> {
     let config = Config::load(&config_path)?;
     log::info!(
         "starting with config {} ({} servers, window {})",
@@ -91,11 +103,12 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
 
     apply_preferences(&window, &persisted);
     install_window_callbacks(&window, store.clone(), geometry.clone());
-    install_tray_callbacks(
+    let restart_requested = install_tray_callbacks(
         &window,
         &tray,
         Rc::new(DesktopNotificationSink),
         geometry.clone(),
+        config_path,
     );
     install_termination_handler(&tray)?;
 
@@ -149,7 +162,11 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
     log::info!("shutdown complete");
     event_loop_result?;
     geometry_result?;
-    Ok(())
+    Ok(if restart_requested.get() {
+        RunOutcome::Restart
+    } else {
+        RunOutcome::Exit
+    })
 }
 
 /// Logs backend-selected scale after Winit has attached a real monitor.
@@ -277,7 +294,9 @@ fn install_tray_callbacks(
     tray: &SalmonTray,
     notifications: Rc<dyn NotificationSink>,
     geometry: WindowGeometryManager,
-) {
+    config_path: PathBuf,
+) -> Rc<Cell<bool>> {
+    let restart_requested = Rc::new(Cell::new(false));
     let window_weak = window.as_weak();
     let geometry_for_toggle = geometry.clone();
     tray.on_toggle_window(move || {
@@ -316,13 +335,31 @@ fn install_tray_callbacks(
         activate_window(window.window());
     });
 
+    let notifications_for_example = notifications.clone();
     tray.on_example_notification(move || {
-        if let Err(error) = notifications.push(
+        if let Err(error) = notifications_for_example.push(
             "Example notification",
             "Salmon Watch desktop notifications are working.",
         ) {
             log::error!("failed to show example notification: {error:#}");
         }
+    });
+
+    let restart_requested_from_tray = restart_requested.clone();
+    let geometry_for_restart = geometry.clone();
+    let window_weak = window.as_weak();
+    tray.on_restart(move || {
+        if !restart_config_is_valid(&config_path, notifications.as_ref()) {
+            return;
+        }
+        restart_requested_from_tray.set(true);
+        if let Some(window) = window_weak.upgrade()
+            && window.window().is_visible()
+            && let Err(error) = geometry_for_restart.save(window.window())
+        {
+            log::error!("failed to save window geometry: {error:#}");
+        }
+        let _ = slint::quit_event_loop();
     });
 
     let window_weak = window.as_weak();
@@ -335,6 +372,57 @@ fn install_tray_callbacks(
         }
         let _ = slint::quit_event_loop();
     });
+
+    restart_requested
+}
+
+/// Refuses to tear down a working instance when the edited configuration is invalid.
+fn restart_config_is_valid(path: &std::path::Path, notifications: &dyn NotificationSink) -> bool {
+    match Config::load(path) {
+        Ok(_) => true,
+        Err(error) => {
+            log::error!("configuration reload failed: {error:#}");
+            if let Err(notification_error) =
+                notifications.push("Configuration reload failed", &format!("{error:#}"))
+            {
+                log::error!(
+                    "failed to show configuration reload error notification: {notification_error:#}"
+                );
+            }
+            false
+        }
+    }
+}
+
+/// Starts a fresh process only after `run` has returned and released UI/runtime resources.
+fn restart_current_process() -> Result<()> {
+    let executable = std::env::current_exe().context("failed to locate current executable")?;
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    log::info!("restarting application");
+    let mut command = restart_command(executable.as_os_str(), &arguments);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        // Prefer exec to spawning on Unix: retaining the PID also retains the
+        // shell's foreground-job and terminal relationship, and there is never
+        // a window in which both watcher processes are alive.
+        Err(command.exec()).context("failed to replace current process")
+    }
+    #[cfg(not(unix))]
+    {
+        command
+            .spawn()
+            .context("failed to start replacement process")?;
+        Ok(())
+    }
+}
+
+fn restart_command(executable: &OsStr, arguments: &[OsString]) -> ProcessCommand {
+    let mut command = ProcessCommand::new(executable);
+    command.args(arguments);
+    command
 }
 
 /// Restores a minimized native window and asks the window manager for focus.
@@ -471,6 +559,74 @@ mod tests {
     use crate::persistence::{Store, WindowGeometry};
     use crate::window_geometry::WindowGeometryManager;
     use slint::ComponentHandle;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingNotificationSink {
+        notifications: Mutex<Vec<(String, String)>>,
+    }
+
+    impl crate::notification::NotificationSink for RecordingNotificationSink {
+        fn push(&self, title: &str, body: &str) -> anyhow::Result<()> {
+            self.notifications
+                .lock()
+                .unwrap()
+                .push((title.to_owned(), body.to_owned()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn restart_validation_keeps_running_and_notifies_for_invalid_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("salmon-watch.yml");
+        std::fs::write(&config_path, "wsClient: [invalid").unwrap();
+        let notifications = RecordingNotificationSink::default();
+
+        assert!(!super::restart_config_is_valid(
+            &config_path,
+            &notifications
+        ));
+        let notifications = notifications.notifications.lock().unwrap();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].0, "Configuration reload failed");
+        assert!(notifications[0].1.contains("failed to parse config"));
+    }
+
+    #[test]
+    fn restart_validation_accepts_valid_config_without_notification() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("salmon-watch.yml");
+        std::fs::write(
+            &config_path,
+            "wsClient:\n  servers:\n    - id: local\n      addr: localhost:8080\n",
+        )
+        .unwrap();
+        let notifications = RecordingNotificationSink::default();
+
+        assert!(super::restart_config_is_valid(&config_path, &notifications));
+        assert!(notifications.notifications.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn restart_command_preserves_executable_and_arguments() {
+        let arguments = vec![
+            std::ffi::OsString::from("--config"),
+            std::ffi::OsString::from("/tmp/custom config.yml"),
+            std::ffi::OsString::from("--start-hidden"),
+        ];
+        let command = super::restart_command(std::ffi::OsStr::new("/opt/salmon-watch"), &arguments);
+
+        assert_eq!(command.get_program(), "/opt/salmon-watch");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            arguments
+                .iter()
+                .map(|argument| argument.as_os_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(command.get_envs().next().is_none());
+    }
 
     #[test]
     fn tray_toggle_shows_activates_or_hides_based_on_window_state() {
