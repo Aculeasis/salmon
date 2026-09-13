@@ -40,7 +40,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install salmon-watch build dependencies
+      - name: Install Salmon Watch build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc libgtk-3-dev libayatana-appindicator3-dev
@@ -54,13 +54,13 @@ jobs:
 
       - name: Build binaries
         shell: bash
-        run: make salmon salmon-watch salmon-watch-2
+        run: make salmon salmon-watch-legacy salmon-watch-2
 
       - name: Package binaries
         run: |
           mkdir release
           tar -czf "release/salmon_${ARTIFACT_VERSION}_linux_${ARTIFACT_ARCH}.tar.gz" -C bin salmon
-          tar -czf "release/salmon-watch_${ARTIFACT_VERSION}_linux_${ARTIFACT_ARCH}.tar.gz" -C bin salmon-watch
+          tar -czf "release/salmon-watch-legacy_${ARTIFACT_VERSION}_linux_${ARTIFACT_ARCH}.tar.gz" -C bin salmon-watch-legacy
 
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0.24.2
@@ -77,9 +77,9 @@ jobs:
             bin/salmon \
             "salmon_${ARTIFACT_VERSION}_linux_${ARTIFACT_ARCH}"
           bash util/prepare_release_artifact.sh \
-            "release/salmon-watch_${ARTIFACT_VERSION}_linux_${ARTIFACT_ARCH}.tar.gz" \
-            bin/salmon-watch \
-            "salmon-watch_${ARTIFACT_VERSION}_linux_${ARTIFACT_ARCH}"
+            "release/salmon-watch-legacy_${ARTIFACT_VERSION}_linux_${ARTIFACT_ARCH}.tar.gz" \
+            bin/salmon-watch-legacy \
+            "salmon-watch-legacy_${ARTIFACT_VERSION}_linux_${ARTIFACT_ARCH}"
 
       - name: Upload intermediary Linux artifacts
         uses: actions/upload-artifact@v6
@@ -89,8 +89,8 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ inputs.retention_days }}
 
-  build-salmon-watch:
-    name: Build salmon-watch (${{ matrix.os }})
+  build-salmon-watch-legacy:
+    name: Build salmon-watch-legacy (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -128,22 +128,22 @@ jobs:
           echo "ARTIFACT_VERSION=${version#v}" >> "$GITHUB_ENV"
           echo "ARTIFACT_ARCH=$(go env GOARCH)" >> "$GITHUB_ENV"
 
-      - name: Build salmon-watch
+      - name: Build Salmon Watch applications
         shell: bash
-        run: make salmon-watch salmon-watch-2
+        run: make salmon-watch-legacy salmon-watch-2
 
       - name: Package macOS binary
         if: matrix.os == 'macos'
         run: |
           mkdir release
-          tar -czf "release/salmon-watch_${ARTIFACT_VERSION}_darwin_${ARTIFACT_ARCH}.tar.gz" -C bin salmon-watch
+          tar -czf "release/salmon-watch-legacy_${ARTIFACT_VERSION}_darwin_${ARTIFACT_ARCH}.tar.gz" -C bin salmon-watch-legacy
 
       - name: Package Windows binary
         if: matrix.os == 'windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path release
-          Compress-Archive -Path bin/salmon-watch.exe -DestinationPath "release/salmon-watch_${env:ARTIFACT_VERSION}_windows_${env:ARTIFACT_ARCH}.zip"
+          Compress-Archive -Path bin/salmon-watch-legacy.exe -DestinationPath "release/salmon-watch-legacy_${env:ARTIFACT_VERSION}_windows_${env:ARTIFACT_ARCH}.zip"
 
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0.24.2
@@ -157,13 +157,13 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ matrix.os }}" == "windows" ]]; then
-            archive="release/salmon-watch_${ARTIFACT_VERSION}_windows_${ARTIFACT_ARCH}.zip"
-            binary="bin/salmon-watch.exe"
-            signature_basename="salmon-watch.exe_${ARTIFACT_VERSION}_windows_${ARTIFACT_ARCH}"
+            archive="release/salmon-watch-legacy_${ARTIFACT_VERSION}_windows_${ARTIFACT_ARCH}.zip"
+            binary="bin/salmon-watch-legacy.exe"
+            signature_basename="salmon-watch-legacy.exe_${ARTIFACT_VERSION}_windows_${ARTIFACT_ARCH}"
           else
-            archive="release/salmon-watch_${ARTIFACT_VERSION}_darwin_${ARTIFACT_ARCH}.tar.gz"
-            binary="bin/salmon-watch"
-            signature_basename="salmon-watch_${ARTIFACT_VERSION}_darwin_${ARTIFACT_ARCH}"
+            archive="release/salmon-watch-legacy_${ARTIFACT_VERSION}_darwin_${ARTIFACT_ARCH}.tar.gz"
+            binary="bin/salmon-watch-legacy"
+            signature_basename="salmon-watch-legacy_${ARTIFACT_VERSION}_darwin_${ARTIFACT_ARCH}"
           fi
           bash util/prepare_release_artifact.sh "$archive" "$binary" "$signature_basename"
 
@@ -179,7 +179,7 @@ jobs:
     name: Assemble release artifacts
     needs:
       - build-linux
-      - build-salmon-watch
+      - build-salmon-watch-legacy
     runs-on: ubuntu-latest
     permissions:
       actions: write

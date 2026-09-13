@@ -13,7 +13,7 @@ import (
 // creating unusable files on platforms that do not support it yet.
 func validateWatchSetupPlatform(goos string) error {
 	if goos != "linux" {
-		return fmt.Errorf("salmon-watch setup is not implemented on this platform (%s)", goos)
+		return fmt.Errorf("salmon-watch-legacy setup is not implemented on this platform (%s)", goos)
 	}
 	return nil
 }
@@ -87,7 +87,7 @@ func renderWatchDesktopEntry(configFilename string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	entry, err := setup.RenderDesktopEntryTemplate("salmon-watch.desktop.tpl", string(mustEmbeddedAsset("assets/setup/salmon-watch.desktop.tpl")), struct {
+	entry, err := setup.RenderDesktopEntryTemplate("salmon-watch-legacy.desktop.tpl", string(mustEmbeddedAsset("assets/setup/salmon-watch-legacy.desktop.tpl")), struct {
 		Executable     string
 		ConfigFilename string
 	}{executable, absoluteConfigFilename})
@@ -97,13 +97,13 @@ func renderWatchDesktopEntry(configFilename string) (string, error) {
 	return entry, nil
 }
 
-// printWatchStartHint explains how to start Salmon Watch now.
+// printWatchStartHint explains how to start Salmon Watch Legacy now.
 func printWatchStartHint(output io.Writer, configFilename string) error {
 	startCommand, err := watchStartCommand(configFilename)
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(output, "\nSalmon Watch is configured and installed for desktop autostart and application-menu launch. To start it now, run:\n\n    %s\n", startCommand)
+	_, err = fmt.Fprintf(output, "\nSalmon Watch Legacy is configured and installed for desktop autostart and application-menu launch. To start it now, run:\n\n    %s\n", startCommand)
 	return err
 }
 
@@ -122,7 +122,7 @@ func defaultWatchAutostartPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(configHome, "autostart", "salmon-watch.desktop"), nil
+	return filepath.Join(configHome, "autostart", "salmon-watch-legacy.desktop"), nil
 }
 
 // defaultWatchLauncherPath returns the XDG desktop application-menu path.
@@ -131,7 +131,7 @@ func defaultWatchLauncherPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dataHome, "applications", "salmon-watch.desktop"), nil
+	return filepath.Join(dataHome, "applications", "salmon-watch-legacy.desktop"), nil
 }
 
 // defaultWatchIconPath returns the scalable XDG application-icon path.
@@ -140,7 +140,7 @@ func defaultWatchIconPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dataHome, "icons", "hicolor", "scalable", "apps", "salmon-watch.svg"), nil
+	return filepath.Join(dataHome, "icons", "hicolor", "scalable", "apps", "salmon-watch-legacy.svg"), nil
 }
 
 // watchStartCommand returns a command that starts Salmon Watch with the given

@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   setup-and-incident-flow:
-    name: End-to-end setup and incident flow (Linux)
+    name: End-to-end legacy setup and incident flow (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -33,7 +33,7 @@ jobs:
 
       - name: Build and install binaries
         run: |
-          make salmon salmon-watch
+          make salmon salmon-watch-legacy
           sudo make install
 
       - name: Set up and start Salmon
@@ -46,15 +46,15 @@ jobs:
           sudo salmon setup install-service
           sudo systemctl start salmon.service
 
-      - name: Prepare isolated Salmon Watch home
+      - name: Prepare isolated Salmon Watch Legacy home
         run: mkdir -p "${RUNNER_TEMP}/salmon-watch-home"
 
-      - name: Set up Salmon Watch
+      - name: Set up Salmon Watch Legacy
         env:
           HOME: ${{ runner.temp }}/salmon-watch-home
           XDG_CONFIG_HOME: ${{ runner.temp }}/salmon-watch-home/.config
           XDG_DATA_HOME: ${{ runner.temp }}/salmon-watch-home/.local/share
-        run: salmon-watch setup
+        run: salmon-watch-legacy setup
 
       - name: Verify incident reaches the UI WebSocket
         env:
@@ -62,8 +62,8 @@ jobs:
           XDG_CONFIG_HOME: ${{ runner.temp }}/salmon-watch-home/.config
           XDG_DATA_HOME: ${{ runner.temp }}/salmon-watch-home/.local/share
         run: |
-          watch_log="${RUNNER_TEMP}/salmon-watch.log"
-          setsid dbus-run-session -- xvfb-run -a salmon-watch >"${watch_log}" 2>&1 &
+          watch_log="${RUNNER_TEMP}/salmon-watch-legacy.log"
+          setsid dbus-run-session -- xvfb-run -a salmon-watch-legacy >"${watch_log}" 2>&1 &
           watch_pid=$!
           cleanup_watch() {
             kill -- "-${watch_pid}" 2>/dev/null || true
@@ -72,8 +72,8 @@ jobs:
           trap cleanup_watch EXIT
 
           # Exercise the same local WebSocket endpoint used by the browser UI.
-          if ! node .github/e2e/verify-salmon-watch.mjs; then
-            echo "Salmon Watch log:"
+          if ! node .github/e2e/verify-salmon-watch-legacy.mjs; then
+            echo "Salmon Watch Legacy log:"
             cat "${watch_log}"
             echo "Salmon service log:"
             sudo journalctl --no-pager -u salmon.service

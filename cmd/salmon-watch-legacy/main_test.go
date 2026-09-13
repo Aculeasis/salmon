@@ -64,7 +64,7 @@ func TestWatchConfigPathsRespectXDGConfigHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(xdgConfigHome, "autostart", "salmon-watch.desktop"); autostartPath != want {
+	if want := filepath.Join(xdgConfigHome, "autostart", "salmon-watch-legacy.desktop"); autostartPath != want {
 		t.Fatalf("default autostart path = %q, want %q", autostartPath, want)
 	}
 }
@@ -78,7 +78,7 @@ func TestWatchLauncherPathRespectsXDGDataHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(xdgDataHome, "applications", "salmon-watch.desktop"); launcherPath != want {
+	if want := filepath.Join(xdgDataHome, "applications", "salmon-watch-legacy.desktop"); launcherPath != want {
 		t.Fatalf("default launcher path = %q, want %q", launcherPath, want)
 	}
 
@@ -86,7 +86,7 @@ func TestWatchLauncherPathRespectsXDGDataHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(xdgDataHome, "icons", "hicolor", "scalable", "apps", "salmon-watch.svg"); iconPath != want {
+	if want := filepath.Join(xdgDataHome, "icons", "hicolor", "scalable", "apps", "salmon-watch-legacy.svg"); iconPath != want {
 		t.Fatalf("default icon path = %q, want %q", iconPath, want)
 	}
 }
@@ -183,7 +183,7 @@ func TestWatchVersionFlagPrintsBuildInformation(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Salmon Watch dev\n", "Commit: none\n", "Build time: unknown\n", "Built by: unknown\n", "GOOS: ", "CGO: "} {
+	for _, want := range []string{"Salmon Watch Legacy dev\n", "Commit: none\n", "Build time: unknown\n", "Built by: unknown\n", "GOOS: ", "CGO: "} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("version output %q does not contain %q", output.String(), want)
 		}
@@ -230,14 +230,14 @@ func TestWatchStartCommand(t *testing.T) {
 }
 
 func TestWatchAutostartTemplateIncludesExecutableAndConfig(t *testing.T) {
-	entry, err := setup.RenderDesktopEntryTemplate("salmon-watch.desktop.tpl", string(mustEmbeddedAsset("assets/setup/salmon-watch.desktop.tpl")), struct {
+	entry, err := setup.RenderDesktopEntryTemplate("salmon-watch-legacy.desktop.tpl", string(mustEmbeddedAsset("assets/setup/salmon-watch-legacy.desktop.tpl")), struct {
 		Executable     string
 		ConfigFilename string
-	}{"/home/user/.local/bin/salmon-watch", "/home/user/.config/salmon-watch/salmon-watch.yml"})
+	}{"/home/user/.local/bin/salmon-watch-legacy", "/home/user/.config/salmon-watch/salmon-watch.yml"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Type=Application", "Icon=salmon-watch", "Exec=\"/home/user/.local/bin/salmon-watch\" --config \"/home/user/.config/salmon-watch/salmon-watch.yml\"", "Terminal=false"} {
+	for _, want := range []string{"Type=Application", "Icon=salmon-watch-legacy", "Exec=\"/home/user/.local/bin/salmon-watch-legacy\" --config \"/home/user/.config/salmon-watch/salmon-watch.yml\"", "Terminal=false"} {
 		if !strings.Contains(entry, want) {
 			t.Fatalf("entry %q does not contain %q", entry, want)
 		}
@@ -245,7 +245,7 @@ func TestWatchAutostartTemplateIncludesExecutableAndConfig(t *testing.T) {
 }
 
 func TestWatchAutostartTemplateEscapesDesktopFieldCodes(t *testing.T) {
-	entry, err := setup.RenderDesktopEntryTemplate("salmon-watch.desktop.tpl", string(mustEmbeddedAsset("assets/setup/salmon-watch.desktop.tpl")), struct {
+	entry, err := setup.RenderDesktopEntryTemplate("salmon-watch-legacy.desktop.tpl", string(mustEmbeddedAsset("assets/setup/salmon-watch-legacy.desktop.tpl")), struct {
 		Executable     string
 		ConfigFilename string
 	}{"/tmp/sal%mon", "/tmp/a%b.yml"})

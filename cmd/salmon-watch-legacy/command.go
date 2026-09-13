@@ -23,9 +23,9 @@ func newWatchRootCommand() *cobra.Command {
 		return nil
 	}
 	root := &cobra.Command{
-		Use:          "salmon-watch",
+		Use:          "salmon-watch-legacy",
 		Short:        "Show Salmon status in the desktop tray",
-		Version:      version.FullDescription("Salmon Watch"),
+		Version:      version.FullDescription("Salmon Watch Legacy"),
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
