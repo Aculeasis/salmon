@@ -85,10 +85,10 @@ install: install-salmon install-salmon-watch
 install-salmon:
 	$(INSTALL) $(INSTALL_FLAGS) -D bin/salmon$(GOEXE) $(BINDIR)/salmon$(GOEXE)
 
-.PHONY: install-salmon-watch-legacy
-install-salmon-watch-legacy:
-	$(INSTALL) $(INSTALL_FLAGS) -D bin/salmon-watch-legacy$(GOEXE) $(BINDIR)/salmon-watch-legacy$(GOEXE)
-
 .PHONY: install-salmon-watch
 install-salmon-watch:
 	$(INSTALL) $(INSTALL_FLAGS) -D bin/salmon-watch$(GOEXE) $(BINDIR)/salmon-watch$(GOEXE)
+
+.PHONY: install-salmon-watch-legacy
+install-salmon-watch-legacy:
+	$(INSTALL) $(INSTALL_FLAGS) -D bin/salmon-watch-legacy$(GOEXE) $(BINDIR)/salmon-watch-legacy$(GOEXE)

@@ -230,20 +230,27 @@ X11.
 
 Having that, to build both `salmon` and `salmon-watch`:
 
-```
+```sh
 make
 ```
 
 To build only one of them:
 
-```
+```sh
 make salmon
 make salmon-watch
 ```
 
-The legacy GTK-based client is not part of the default build. Building it with
-`make salmon-watch-legacy` additionally requires `libgtk-3-dev` and
-`libayatana-appindicator3-dev` on Ubuntu.
+To install built binaries under `/usr/local/bin`:
+
+```sh
+sudo install-salmon
+sudo install-salmon-watch
+```
+
+The legacy Go client (serving local web ui) is not part of the default build.
+Building it with `make salmon-watch-legacy` additionally requires
+`libgtk-3-dev` and `libayatana-appindicator3-dev` on Ubuntu.
 
 ### Running tests
 
