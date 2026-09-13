@@ -1,8 +1,8 @@
-# Salmon: desktop alerts and a tray icon for failing systemd services and anything else
+# Salmon: a tray icon and desktop alerts for failing systemd services and anything else
 
 Salmon is a simple monitoring utility which checks the health of your local
-machine and/or remote server(s), and helps you notice timely if something is
-wrong.
+Linux machine and/or remote server(s), and helps you notice timely if something
+is wrong.
 
 ![Salmon demo](https://dmitryfrank.com/_media/projects/salmon/salmon_rust_demo.gif)
 
@@ -50,11 +50,12 @@ becomes "salmon".
 
 This project has two main parts:
 
-  * `salmon`, a background service: runs on a machine, checks its health, and
-    serves the current incidents via simple read-only WebSocket API;
-  * `salmon-watch`, a desktop app: connects to one or more `salmon`s, receives
-    data from them, shows a tray icon, sends desktop notifications, and
-    provides a local web UI.
+  * `salmon`, a background service written in Go: runs on a machine, checks its
+    health, and serves the current incidents via simple read-only WebSocket
+    API;
+  * `salmon-watch`, a desktop app written in Rust + Slint: connects to one or
+    more `salmon`s, receives data from them, shows a tray icon, sends desktop
+    notifications, and provides a native GUI.
 
 So `salmon` is a server (which can run locally too), and `salmon-watch` is a
 client which runs on e.g. a laptop. If we have a laptop and two servers, a
@@ -95,8 +96,8 @@ For details about Salmon-Watch configuration, see
 [Configuring Salmon-Watch](./docs/salmon_watch_config.md).
 
 If an incident happens and we want to just acknowledge it but worry about it
-later, we can snooze it in the web UI, so the icon stops being annoying but
-it'll get unsnoozed again later.
+later, we can snooze it in the UI, so the icon stops being annoying but it'll
+get unsnoozed again later.
 
 The tray icon shows the worst current non-snoozed state:
 
@@ -113,8 +114,8 @@ The tray icon shows the worst current non-snoozed state:
 The easiest way to install both `salmon` and `salmon-watch` to monitor local
 machine health is as follows:
 
-First, download the [latest prebuilt binaries from GitHub](https://github.com/dimonomid/salmon/releases/tag/v1.0.0),
-like `salmon_1.0.0_linux_amd64.tar.gz` and `salmon-watch_1.0.0_linux_amd64.tar.gz`,
+First, download the [latest prebuilt binaries from GitHub](https://github.com/dimonomid/salmon/releases/latest),
+like `salmon_x.y.z_linux_amd64.tar.gz` and `salmon-watch_x.y.z_linux_amd64.tar.gz`,
 and unpack them. You'll get two binaries: `salmon` and `salmon-watch`.
 
 Then:
@@ -134,8 +135,8 @@ sudo systemctl start salmon.service
 salmon-watch
 ```
 
-You should now see a tray icon, and if you click on it and then Status, you'll
-see the web interface. When you reboot, it will start automatically.
+You should now see a tray icon, and if you click on it, you'll see the UI. When
+you reboot, it will start automatically.
 
 ### Monitoring remote machines
 
@@ -154,8 +155,9 @@ to establish an ssh tunnel, and `salmon-watch` has a convenient support for it:
 open the config file `~/.config/salmon-watch/salmon-watch.yml`, and add one
 more entry to the `wsClient.servers` array, like that (adjusting at least your
 server hostname and username). There is no `addr` in this entry: for a
-structured SSH tunnel, Salmon-Watch automatically allocates an available port
-on `127.0.0.1`.
+structured SSH tunnel, salmon-watch automatically allocates an available port
+on `127.0.0.1`. You may still set an explicit loopback `addr` with a port of
+your choice when a fixed local forwarding port is useful.
 
 ```yaml
     - id: myserver # Arbitrary but unique ID for this server.
@@ -168,11 +170,8 @@ on `127.0.0.1`.
 ```
 
 And restart `salmon-watch` (right-click on the tray icon -> "Restart and reload
-configuration"). Open its web UI and verify that the list of servers now
-includes your newly added remote server as well.
-
-You may still set an explicit loopback `addr` when a fixed local forwarding
-port is useful.
+configuration"). Open the UI and verify that the list of servers now includes
+your newly added remote server as well.
 
 SSH tunnel is not the only way to access remote servers; salmon also supports
 TLS and bearer token authentication. For details, see docs on
@@ -194,14 +193,17 @@ a warning. That includes services stopped manually - if it was manually stopped
 for some reason, I want to be annoyed by the blinking icon until the service is
 running again. And I have some more custom exec checks as well.
 
-Don't forget to restart the salmon systemd service to apply the changes.
+Don't forget to restart the salmon systemd service to apply the changes:
+
+```sh
+sudo systemctl restart salmon.service
+```
 
 ## Non-Linux OS support
 
-So far Salmon was only tested on Linux. The tray icon library is crossplatform
-and is known to work on Windows and MacOS, so there's nothing preventing
-`salmon-watch` from working on these OSes, and you can run it there and monitor
-your remote Linux servers, but not so much the local machine.
+So far Salmon was only tested on Linux. Nevertheless, the client
+(`salmon-watch`) should work on Windows and MacOS as well, so you can run it
+there and monitor your remote Linux servers, but not so much the local machine.
 
 Even `salmon` can technically run on non-Linux, but obviously the `systemd` is
 irrelevant there, and then the only useful check there is `exec`: just polling
