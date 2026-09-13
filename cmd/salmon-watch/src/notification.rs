@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use notify_rust::{Notification, Urgency};
+use notify_rust::Notification;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -173,8 +173,7 @@ fn desktop_notification(title: &str, body: &str) -> Notification {
     notification
         .appname("Salmon Watch")
         .summary(title)
-        .body(body)
-        .urgency(Urgency::Normal);
+        .body(body);
     notification
 }
 
