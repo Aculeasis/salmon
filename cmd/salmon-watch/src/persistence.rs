@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{OffsetDateTime, UtcOffset};
 
-const STATE_FILENAME: &str = ".salmon-watch-2-state.json";
+const STATE_FILENAME: &str = ".salmon-watch-state.json";
+const LEGACY_STATE_FILENAME: &str = ".salmon-watch-legacy-state.json";
 
 /// Cloneable, process-local serialized access to the state file.
 ///
@@ -215,13 +216,96 @@ fn default_expanded() -> bool {
     true
 }
 
-/// Returns the legacy home-directory state path.
-///
-/// The `-2` filename is intentionally stable across the crate rename so an
-/// upgrade does not discard snoozes, preferences, or window placement.
+/// Returns the home-directory state path after preserving any pre-v1 state for
+/// the legacy application.
 pub fn default_state_path() -> Result<PathBuf> {
     let home = dirs::home_dir().context("could not determine the user home directory")?;
-    Ok(home.join(STATE_FILENAME))
+    let state_path = home.join(STATE_FILENAME);
+    let legacy_path = home.join(LEGACY_STATE_FILENAME);
+    if preserve_legacy_state(&state_path, &legacy_path)? {
+        log::info!(
+            "copied legacy state from {} to {}",
+            state_path.display(),
+            legacy_path.display()
+        );
+    }
+    Ok(state_path)
+}
+
+/// Atomically copies an unversioned (or pre-v1) canonical file to the legacy
+/// path without ever replacing a copy created by another process.
+fn preserve_legacy_state(source: &Path, legacy_path: &Path) -> Result<bool> {
+    if legacy_path.exists() {
+        return Ok(false);
+    }
+
+    let data = match fs::read(source) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to read state file for migration {}",
+                    source.display()
+                )
+            });
+        }
+    };
+    let value: Value = serde_json::from_slice(&data).with_context(|| {
+        format!(
+            "failed to inspect state file for migration {}",
+            source.display()
+        )
+    })?;
+    let Some(fields) = value.as_object() else {
+        anyhow::bail!(
+            "state file for migration is not a JSON object: {}",
+            source.display()
+        );
+    };
+    let is_legacy = match fields.get("schema_version") {
+        None => true,
+        Some(version) => {
+            version
+                .as_u64()
+                .context("state schema_version is not a non-negative integer")?
+                < 1
+        }
+    };
+    if !is_legacy {
+        return Ok(false);
+    }
+
+    let parent = legacy_path
+        .parent()
+        .context("legacy state filename has no parent directory")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+        format!(
+            "failed to create temporary state file in {}",
+            parent.display()
+        )
+    })?;
+    set_owner_only_permissions(temporary.as_file())?;
+    temporary
+        .write_all(&data)
+        .context("failed to copy legacy state into temporary file")?;
+    temporary
+        .flush()
+        .context("failed to flush temporary legacy state file")?;
+    temporary
+        .as_file()
+        .sync_all()
+        .context("failed to sync temporary legacy state file")?;
+    match temporary.persist_noclobber(legacy_path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error.error).with_context(|| {
+            format!(
+                "failed to preserve legacy state at {}",
+                legacy_path.display()
+            )
+        }),
+    }
 }
 
 /// Loads state, treating absence as first run but surfacing malformed contents.
@@ -299,6 +383,59 @@ mod tests {
         assert!(state.preferences.sections.active_incidents_expanded);
         assert!(!state.preferences.sections.snoozed_incidents_expanded);
         assert_eq!(state.preferences.window_geometry, None);
+    }
+
+    #[test]
+    fn unversioned_canonical_state_is_copied_for_legacy_without_removing_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join(STATE_FILENAME);
+        let legacy = directory.path().join(LEGACY_STATE_FILENAME);
+        let contents = br#"{"snoozed":{"local.disk":{"snoozed_until":"2026-09-06T12:00:00Z"}}}"#;
+        fs::write(&source, contents).unwrap();
+
+        assert!(preserve_legacy_state(&source, &legacy).unwrap());
+
+        assert_eq!(fs::read(&source).unwrap(), contents);
+        assert_eq!(fs::read(&legacy).unwrap(), contents);
+    }
+
+    #[test]
+    fn schema_version_zero_is_copied_for_legacy() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join(STATE_FILENAME);
+        let legacy = directory.path().join(LEGACY_STATE_FILENAME);
+        let contents = br#"{"schema_version":0,"snoozed":{}}"#;
+        fs::write(&source, contents).unwrap();
+
+        assert!(preserve_legacy_state(&source, &legacy).unwrap());
+
+        assert_eq!(fs::read(&legacy).unwrap(), contents);
+    }
+
+    #[test]
+    fn versioned_canonical_state_is_not_copied_for_legacy() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join(STATE_FILENAME);
+        let legacy = directory.path().join(LEGACY_STATE_FILENAME);
+        fs::write(&source, br#"{"schema_version":1,"snoozed":{}}"#).unwrap();
+
+        assert!(!preserve_legacy_state(&source, &legacy).unwrap());
+
+        assert!(!legacy.exists());
+    }
+
+    #[test]
+    fn existing_legacy_state_is_never_overwritten() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join(STATE_FILENAME);
+        let legacy = directory.path().join(LEGACY_STATE_FILENAME);
+        fs::write(&source, br#"{"snoozed":{"source":{}}}"#).unwrap();
+        let existing = br#"{"snoozed":{"destination":{}}}"#;
+        fs::write(&legacy, existing).unwrap();
+
+        assert!(!preserve_legacy_state(&source, &legacy).unwrap());
+
+        assert_eq!(fs::read(&legacy).unwrap(), existing);
     }
 
     #[test]

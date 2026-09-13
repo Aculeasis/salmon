@@ -79,9 +79,19 @@ func (app *watchApp) onReady() {
 	loadTrayIcons()
 
 	applyIcon(trayState{Alerting: overallStateUnknown})
+	canonicalStatePath := filepath.Join(homeDir, stateFilename)
+	legacyStatePath := filepath.Join(homeDir, legacyStateFilename)
+	copiedLegacyState, err := preserveLegacyState(canonicalStatePath, legacyStatePath)
+	if err != nil {
+		app.logger.Log(logs.Error, "Failed to migrate legacy state: %s", err)
+		os.Exit(1)
+	}
+	if copiedLegacyState {
+		app.logger.Log(logs.Info, "Copied legacy state from %s to %s", canonicalStatePath, legacyStatePath)
+	}
 	app.core, err = newSalmonWatchCore(salmonWatchCoreParams{
 		Config:        app.config.WSClient,
-		StatePath:     filepath.Join(homeDir, ".salmon-watch-state.json"),
+		StatePath:     legacyStatePath,
 		Notifications: notify,
 		Clock:         app.clock,
 		Logger:        app.logger,
