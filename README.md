@@ -209,14 +209,20 @@ hard to test. PRs are welcome.
 
 ### Building
 
-You need [Go](https://go.dev/) 1.26.
+You need [Go](https://go.dev/) 1.26 and
+[Rust](https://www.rust-lang.org/tools/install) 1.92 or newer.
 
-For `salmon-watch`, you also need some UI-related libraries, which on Ubuntu
-can be installed like this:
+On Ubuntu, install the native dependencies used to build and run
+`salmon-watch`:
 
+```sh
+sudo apt-get install -y gcc libfontconfig-dev libxkbcommon-x11-0
 ```
-sudo apt-get install -y gcc libgtk-3-dev libayatana-appindicator3-dev
-```
+
+`gcc` compiles native Rust dependencies, `libfontconfig-dev` provides the
+Fontconfig development files required by Slint's font stack, and
+`libxkbcommon-x11-0` is loaded by Slint/winit when the application runs under
+X11.
 
 Having that, to build both `salmon` and `salmon-watch`:
 
@@ -231,13 +237,46 @@ make salmon
 make salmon-watch
 ```
 
+The legacy GTK-based client is not part of the default build. Building it with
+`make salmon-watch-legacy` additionally requires `libgtk-3-dev` and
+`libayatana-appindicator3-dev` on Ubuntu.
+
 ### Running tests
 
-Same requirements as for building.
+The test suite uses the same Go and Rust build requirements described above.
+It also requires a current [Node.js](https://nodejs.org/) LTS release for the
+legacy client's JavaScript tests. Because `go test ./...` compiles the legacy
+GTK client, its native dependencies are required on Ubuntu too:
 
+```sh
+sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
 ```
+
+Then:
+
+```sh
 make test
 ```
+
+To run only the `salmon-watch` Rust tests:
+
+```sh
+cargo test --manifest-path cmd/salmon-watch/Cargo.toml
+```
+
+Two native window-geometry tests are ignored by the regular suite because
+they require a real X11 session and window manager. A headless environment
+cannot accurately test window positioning, maximizing, hiding, and restoring.
+Run them explicitly, as separate commands:
+
+```sh
+cargo test --manifest-path cmd/salmon-watch/Cargo.toml native_startup_restores_geometry_and_maximized_state -- --ignored
+cargo test --manifest-path cmd/salmon-watch/Cargo.toml native_hide_show_preserves_normal_geometry_while_maximized -- --ignored
+```
+
+They must run separately because Slint's GUI platform can be initialized only
+once per test process. Running both together would make the second test fail
+for a platform-initialization reason rather than a geometry problem.
 
 ## Screenshots
 
