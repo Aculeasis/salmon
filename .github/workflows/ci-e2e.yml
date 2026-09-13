@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 jobs:
-  setup-and-incident-flow:
-    name: End-to-end legacy setup and incident flow (Linux)
+  salmon-watch-legacy:
+    name: salmon-watch-legacy E2E (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -79,6 +79,106 @@ jobs:
             sudo journalctl --no-pager -u salmon.service
             exit 1
           fi
+
+      - name: Stop Salmon
+        if: always()
+        run: sudo systemctl stop salmon.service || true
+
+  salmon-watch:
+    name: salmon-watch E2E (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build and headless-desktop dependencies
+        run: |
+          sudo apt-get update
+          packages=(
+            # Compiles native Rust dependencies such as ring.
+            gcc
+            # Provides fontconfig.pc and headers required by Slint's font stack.
+            libfontconfig-dev
+            # Provides the X11 keyboard library loaded by Slint/winit.
+            libxkbcommon-x11-0
+            # Runs the UI against a headless X server; also installs xauth.
+            xvfb
+            # Provides dbus-run-session for the Slint system tray.
+            dbus-daemon
+          )
+          sudo apt-get install -y "${packages[@]}"
+
+      - name: Build and install binaries
+        run: |
+          make salmon salmon-watch
+          sudo make install-salmon install-salmon-watch
+
+      - name: Set up and start Salmon
+        run: |
+          sudo salmon setup
+          sudo patch --batch --forward /etc/salmon.yml .github/e2e/salmon.yml.patch
+
+          # Re-running this subcommand validates the patched config before the
+          # service starts. Existing setup-managed files remain untouched.
+          sudo salmon setup install-service
+          sudo systemctl start salmon.service
+
+      - name: Prepare isolated Salmon Watch home
+        run: mkdir -p "${RUNNER_TEMP}/salmon-watch-home"
+
+      - name: Set up Salmon Watch
+        env:
+          HOME: ${{ runner.temp }}/salmon-watch-home
+          XDG_CONFIG_HOME: ${{ runner.temp }}/salmon-watch-home/.config
+          XDG_DATA_HOME: ${{ runner.temp }}/salmon-watch-home/.local/share
+        run: salmon-watch setup
+
+      - name: Verify incident reaches Salmon Watch
+        env:
+          HOME: ${{ runner.temp }}/salmon-watch-home
+          XDG_CONFIG_HOME: ${{ runner.temp }}/salmon-watch-home/.config
+          XDG_DATA_HOME: ${{ runner.temp }}/salmon-watch-home/.local/share
+        run: |
+          watch_log="${RUNNER_TEMP}/salmon-watch.log"
+          setsid dbus-run-session -- xvfb-run -a salmon-watch --start-hidden >"${watch_log}" 2>&1 &
+          watch_pid=$!
+          cleanup_watch() {
+            kill -- "-${watch_pid}" 2>/dev/null || true
+            wait "${watch_pid}" 2>/dev/null || true
+          }
+          trap cleanup_watch EXIT
+
+          for _ in {1..120}; do
+            if grep -Fq "UI and system tray initialized" "${watch_log}" &&
+              grep -Fq "server local connected" "${watch_log}" &&
+              grep -Fq "server local synchronized:" "${watch_log}" &&
+              grep -Eq "server local (ongoing|added|updated) incident e2e\.exec_result \(error\): .*expected-e2e-incident" "${watch_log}"; then
+              echo "Salmon Watch received the expected incident:"
+              grep -E "server local (ongoing|added|updated) incident e2e\.exec_result" "${watch_log}"
+              exit 0
+            fi
+            if ! kill -0 "${watch_pid}" 2>/dev/null; then
+              break
+            fi
+            sleep 0.25
+          done
+
+          echo "Timed out waiting for the expected Salmon Watch incident"
+          echo "Salmon Watch log:"
+          cat "${watch_log}"
+          echo "Salmon service log:"
+          sudo journalctl --no-pager -u salmon.service
+          exit 1
 
       - name: Stop Salmon
         if: always()
