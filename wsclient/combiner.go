@@ -2,6 +2,7 @@ package wsclient
 
 import (
 	"fmt"
+	"net"
 	"sort"
 	"sync"
 	"time"
@@ -56,6 +57,11 @@ func NewCombiner(params CombinerParams) (*Combiner, error) {
 	if err := params.Config.Validate(); err != nil {
 		return nil, err
 	}
+	resolvedConfig, automaticallyAllocated, err := resolveTunnelAddresses(params.Config)
+	if err != nil {
+		return nil, err
+	}
+	params.Config = resolvedConfig
 	if params.Logger == nil {
 		panic("Logger is required")
 	}
@@ -75,6 +81,9 @@ func NewCombiner(params CombinerParams) (*Combiner, error) {
 	for i, cfg := range c.params.Config.Servers {
 		serverEventCh := make(chan ServerEvent, 32)
 		serverLogger := params.Logger.WithContext("server_id", cfg.ID)
+		if automaticallyAllocated[cfg.ID] {
+			serverLogger.Log(logs.Info, "Allocated local tunnel address %s", cfg.Addr)
+		}
 
 		command, err := TunnelCommand(cfg)
 		if err != nil {
@@ -117,6 +126,39 @@ func NewCombiner(params CombinerParams) (*Combiner, error) {
 	}
 
 	return c, nil
+}
+
+func resolveTunnelAddresses(config Config) (Config, map[string]bool, error) {
+	automaticallyAllocated := make(map[string]bool)
+	config.Servers = append([]ConfigServer(nil), config.Servers...)
+	for i := range config.Servers {
+		server := &config.Servers[i]
+		if server.Addr != "" {
+			continue
+		}
+		address, err := allocateLoopbackAddress()
+		if err != nil {
+			return Config{}, nil, errors.Annotatef(err, "allocating local tunnel address #%d (%s)", i, server.ID)
+		}
+		server.Addr = address
+		automaticallyAllocated[server.ID] = true
+	}
+	return config, automaticallyAllocated, nil
+}
+
+// allocateLoopbackAddress asks the kernel for an ephemeral IPv4 loopback port.
+// The SSH process binds it immediately afterwards with ExitOnForwardFailure,
+// keeping the unavoidable close-and-exec race both tiny and detectable.
+func allocateLoopbackAddress() (string, error) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		return "", err
+	}
+	return address, nil
 }
 
 // Close stops all Salmon connections and waits for their combiner loops.

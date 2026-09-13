@@ -153,11 +153,12 @@ Presumably you have ssh access to your server with public key authentication
 to establish an ssh tunnel, and `salmon-watch` has a convenient support for it:
 open the config file `~/.config/salmon-watch/salmon-watch.yml`, and add one
 more entry to the `wsClient.servers` array, like that (adjusting at least your
-server hostname and username):
+server hostname and username). There is no `addr` in this entry: for a
+structured SSH tunnel, Salmon-Watch automatically allocates an available port
+on `127.0.0.1`.
 
 ```yaml
     - id: myserver # Arbitrary but unique ID for this server.
-      addr: localhost:41991   # Just any available port on the local machine
       tunnel:
         ssh:
           host: myserver.com  # TODO: your actual server hostname
@@ -168,6 +169,9 @@ server hostname and username):
 
 And restart `salmon-watch`. Open its web UI and verify that the list of servers
 now includes your newly added remote server as well.
+
+You may still set an explicit loopback `addr` when a fixed local forwarding
+port is useful.
 
 SSH tunnel is not the only way to access remote servers; salmon also supports
 TLS and bearer token authentication. For details, see docs on

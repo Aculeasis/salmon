@@ -1,6 +1,7 @@
 package wsclient
 
 import (
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -12,6 +13,53 @@ import (
 	"github.com/dimonomid/salmon/logs"
 	"github.com/dimonomid/salmon/statestracker"
 )
+
+func TestResolveTunnelAddressesAllocatesOmittedAddress(t *testing.T) {
+	config := Config{Servers: []ConfigServer{
+		{ID: "automatic", Tunnel: &ConfigTunnel{SSH: &ConfigSSHTunnel{
+			Host: "example.com", User: "salmon", RemoteSalmonAddr: "127.0.0.1:41990",
+		}}},
+		{ID: "explicit", Addr: "localhost:41992"},
+	}}
+
+	resolved, automatic, err := resolveTunnelAddresses(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, err := net.ResolveTCPAddr("tcp4", resolved.Servers[0].Addr)
+	if err != nil {
+		t.Fatalf("allocated address %q is invalid: %v", resolved.Servers[0].Addr, err)
+	}
+	if !address.IP.IsLoopback() || address.Port == 0 {
+		t.Fatalf("allocated address = %v, want nonzero loopback port", address)
+	}
+	if resolved.Servers[1].Addr != "localhost:41992" {
+		t.Fatalf("explicit address changed to %q", resolved.Servers[1].Addr)
+	}
+	if !automatic["automatic"] || automatic["explicit"] {
+		t.Fatalf("automatic address set = %#v", automatic)
+	}
+	if config.Servers[0].Addr != "" {
+		t.Fatalf("input config was mutated: %#v", config.Servers[0])
+	}
+	command, err := TunnelCommand(resolved.Servers[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantForward := resolved.Servers[0].Addr + ":127.0.0.1:41990"
+	if !containsString(command.Command, wantForward) {
+		t.Fatalf("SSH command = %#v, want forward %q", command.Command, wantForward)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
 
 func combinerTestIncident(key string, stale bool) *salmon.ItemWContext {
 	return &salmon.ItemWContext{

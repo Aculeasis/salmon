@@ -27,6 +27,7 @@ func TestConfigValidateServerIDs(t *testing.T) {
 			config := wsclient.Config{Servers: make([]wsclient.ConfigServer, len(test.ids))}
 			for i, id := range test.ids {
 				config.Servers[i].ID = id
+				config.Servers[i].Addr = "localhost:41990"
 			}
 
 			err := config.Validate()
@@ -70,6 +71,22 @@ func TestConfigValidateTunnels(t *testing.T) {
 		{
 			name:   "ssh",
 			server: wsclient.ConfigServer{ID: "remote", Addr: "localhost:41992", Tunnel: validSSH()},
+		},
+		{
+			name:   "ssh with automatically allocated address",
+			server: wsclient.ConfigServer{ID: "remote", Tunnel: validSSH()},
+		},
+		{
+			name:    "direct server without address",
+			server:  wsclient.ConfigServer{ID: "remote"},
+			wantErr: "addr is required unless tunnel.ssh is configured",
+		},
+		{
+			name: "custom command without address",
+			server: wsclient.ConfigServer{ID: "remote", Tunnel: &wsclient.ConfigTunnel{CustomCommand: &wsclient.ConfigCustomTunnelCommand{
+				Command: []string{"ssh", "host"},
+			}}},
+			wantErr: "addr is required unless tunnel.ssh is configured",
 		},
 		{
 			name:    "empty tunnel",

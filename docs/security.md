@@ -39,7 +39,6 @@ While `salmon-watch` configuration should specify the tunnel:
 
 ```yaml
     - id: myserver            # Arbitrary but unique ID for this server.
-      addr: localhost:42990   # Just any available port on the local machine
       tunnel:
         ssh:
           host: myserver.com  # TODO: Your actual server hostname
@@ -48,7 +47,9 @@ While `salmon-watch` configuration should specify the tunnel:
           remoteSalmonAddr: 127.0.0.1:41990
 ```
 
-Having this, `salmon-watch` will spawn an external `ssh` process forwarding the remote port 41990 to the local port 42990, and once the tunnel is ready, connect to that local port. The ssh command will be something like this:
+Notice that the entry has no `addr`. For the built-in SSH tunnel, omitting it tells `salmon-watch` to allocate an available port on `127.0.0.1`. The selected address is written to the log and reused when the tunnel process restarts.
+
+Salmon Watch then spawns an external `ssh` process forwarding the remote port 41990 to the allocated local port, and connects once the tunnel is ready. The ssh command will be equivalent to this, with the allocated port substituted:
 
 ```
 ssh -N -T \
@@ -57,9 +58,11 @@ ssh -N -T \
   -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
   -o PermitLocalCommand=yes -o "LocalCommand=echo SALMON_TUNNEL_READY" \
   -p 22 \
-  -L localhost:42990:127.0.0.1:41990 \
+  -L 127.0.0.1:<allocated-port>:127.0.0.1:41990 \
   myuser@myserver.com
 ```
+
+You can set an explicit loopback `addr` if you need a stable local port. Note that custom tunnel commands (described below) must always set one because salmon watch cannot inject an automatically selected port into an arbitrary command.
 
 If you need to pass some extra arguments to `ssh`, such as to specify a
 specific private key to use or anything else, you can specify them using the

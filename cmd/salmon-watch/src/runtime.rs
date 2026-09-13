@@ -242,11 +242,12 @@ impl RuntimeHandle {
     /// serialized on this thread. Bounded channels provide backpressure rather
     /// than allowing an outage or update burst to grow memory without limit.
     pub fn start(
-        config: Config,
+        mut config: Config,
         snoozes: BTreeMap<String, OffsetDateTime>,
         publish: Publisher,
         persist: SnoozePersister,
     ) -> Result<Self> {
+        config.resolve_tunnel_addresses()?;
         let (commands, command_rx) = mpsc::channel(32);
         let (shutdown, shutdown_rx) = watch::channel(false);
         let thread = thread::Builder::new()

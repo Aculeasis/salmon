@@ -3,10 +3,9 @@ wsClient:
     - id: local # Arbitrary but unique ID for this server.
       addr: localhost:41990
 
-    # SSH tunnel example. Salmon Watch starts and supervises ssh, then connects
-    # only after ssh prints its readiness marker.
+    # SSH tunnel example. With addr omitted, Salmon Watch allocates an available
+    # port on 127.0.0.1, starts and supervises ssh, then connects after readiness.
     # - id: remote
-    #   addr: 127.0.0.1:41992
     #   tunnel:
     #     ssh:
     #       host: salmon.example.com

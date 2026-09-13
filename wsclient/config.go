@@ -101,6 +101,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("wsClient.servers[%d].id %q duplicates wsClient.servers[%d].id", i, server.ID, previousIndex)
 		}
 		serverIndexByID[server.ID] = i
+		if server.Addr == "" && !hasStructuredSSHTunnel(server) {
+			return fmt.Errorf("wsClient.servers[%d].addr is required unless tunnel.ssh is configured", i)
+		}
 		if server.Auth != nil && server.Auth.BearerTokenFile == "" {
 			return fmt.Errorf("wsClient.servers[%d].auth.bearerTokenFile is required", i)
 		}
@@ -109,6 +112,10 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func hasStructuredSSHTunnel(server ConfigServer) bool {
+	return server.Tunnel != nil && server.Tunnel.SSH != nil && server.Tunnel.CustomCommand == nil
 }
 
 // ValidateServerID checks whether an ID can identify a configured Salmon
@@ -168,6 +175,9 @@ func validateTunnel(server ConfigServer, serverIndex int) error {
 	}
 	if err := validateHostPort(ssh.RemoteSalmonAddr); err != nil {
 		return fmt.Errorf("%s.ssh.remoteSalmonAddr: %w", prefix, err)
+	}
+	if server.Addr == "" {
+		return nil
 	}
 	if err := validateHostPort(server.Addr); err != nil {
 		return fmt.Errorf("wsClient.servers[%d].addr for an SSH tunnel: %w", serverIndex, err)

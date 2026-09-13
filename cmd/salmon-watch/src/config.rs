@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::net::IpAddr;
+use std::net::{IpAddr, TcpListener};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -27,6 +27,7 @@ pub struct ServerConfig {
     /// Stable namespace used to qualify incident keys and persistence entries.
     pub id: String,
     /// TCP `host:port`, without a URL scheme; loopback listener when tunneled.
+    #[serde(default)]
     pub addr: String,
     #[serde(default)]
     pub tls: Option<TlsConfig>,
@@ -127,14 +128,17 @@ impl Config {
             if !ids.insert(&server.id) {
                 bail!("wsClient.servers[{index}].id {:?} is duplicated", server.id);
             }
-            if server.addr.is_empty() {
-                bail!("wsClient.servers[{index}].addr is required");
+            if server.addr.is_empty() && !has_structured_ssh_tunnel(server) {
+                bail!("wsClient.servers[{index}].addr is required unless tunnel.ssh is configured");
             }
-            if server.addr.contains("//") || server.addr.contains('/') {
+            if !server.addr.is_empty() && (server.addr.contains("//") || server.addr.contains('/'))
+            {
                 bail!("wsClient.servers[{index}].addr must be a host:port address, not a URL");
             }
-            validate_host_port(&server.addr)
-                .with_context(|| format!("wsClient.servers[{index}].addr"))?;
+            if !server.addr.is_empty() {
+                validate_host_port(&server.addr)
+                    .with_context(|| format!("wsClient.servers[{index}].addr"))?;
+            }
             if server
                 .auth
                 .as_ref()
@@ -148,6 +152,36 @@ impl Config {
         }
         Ok(())
     }
+
+    /// Replaces omitted structured-SSH endpoints with kernel-assigned loopback ports.
+    pub(crate) fn resolve_tunnel_addresses(&mut self) -> Result<()> {
+        for (index, server) in self.ws_client.servers.iter_mut().enumerate() {
+            if !server.addr.is_empty() {
+                continue;
+            }
+            let listener = TcpListener::bind("127.0.0.1:0").with_context(|| {
+                format!("allocating local tunnel address #{index} ({})", server.id)
+            })?;
+            server.addr = listener
+                .local_addr()
+                .context("reading allocated local tunnel address")?
+                .to_string();
+            drop(listener);
+            log::info!(
+                "server {} allocated local tunnel address {}",
+                server.id,
+                server.addr
+            );
+        }
+        Ok(())
+    }
+}
+
+fn has_structured_ssh_tunnel(server: &ServerConfig) -> bool {
+    server
+        .tunnel
+        .as_ref()
+        .is_some_and(|tunnel| tunnel.ssh.is_some() && tunnel.custom_command.is_none())
 }
 
 /// Validates IDs used in incident namespaces, filenames, and generated commands.
@@ -207,6 +241,9 @@ fn validate_ssh_tunnel(server: &ServerConfig, ssh: &SshTunnelConfig, index: usiz
     }
     validate_host_port(&ssh.remote_salmon_addr)
         .with_context(|| format!("{prefix}.remoteSalmonAddr"))?;
+    if server.addr.is_empty() {
+        return Ok(());
+    }
     let (local_host, _) = validate_host_port(&server.addr)
         .with_context(|| format!("wsClient.servers[{index}].addr for an SSH tunnel"))?;
     // Binding the forwarded port beyond loopback would expose an otherwise
@@ -361,6 +398,54 @@ mod tests {
         assert_eq!(ssh.port, 2222);
         assert_eq!(ssh.remote_salmon_addr, "127.0.0.1:41990");
         assert_eq!(ssh.extra_ssh_args, ["-i", "/tmp/key"]);
+    }
+
+    #[test]
+    fn accepts_and_resolves_omitted_ssh_tunnel_address() {
+        let mut config = parse(
+            r#"wsClient:
+  servers:
+    - id: remote
+      tunnel:
+        ssh:
+          host: salmon.example.com
+          user: monitor
+          remoteSalmonAddr: 127.0.0.1:41990
+"#,
+        )
+        .unwrap();
+        assert!(config.ws_client.servers[0].addr.is_empty());
+
+        config.resolve_tunnel_addresses().unwrap();
+
+        let address: std::net::SocketAddr = config.ws_client.servers[0].addr.parse().unwrap();
+        assert_eq!(address.ip(), std::net::Ipv4Addr::LOCALHOST);
+        assert_ne!(address.port(), 0);
+    }
+
+    #[test]
+    fn rejects_omitted_address_without_structured_ssh_tunnel() {
+        for server in [
+            r#"- id: direct"#,
+            r#"- id: custom
+      tunnel:
+        customCommand:
+          command: [my-tunnel]"#,
+        ] {
+            let yaml = format!(
+                r#"wsClient:
+  servers:
+    {server}
+"#
+            );
+            let error = parse(&yaml).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("addr is required unless tunnel.ssh is configured"),
+                "unexpected error: {error:#}"
+            );
+        }
     }
 
     #[test]
