@@ -34,7 +34,7 @@ jobs:
       - name: Build and install binaries
         run: |
           make salmon salmon-watch-legacy
-          sudo make install
+          sudo make install-salmon install-salmon-watch-legacy
 
       - name: Set up and start Salmon
         run: |

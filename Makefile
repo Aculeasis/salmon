@@ -16,15 +16,13 @@ LDFLAGS := -s -w \
 	-X 'github.com/dimonomid/salmon/version.builtBy=make'
 
 .PHONY: all
-# (for now intentionally skipping salmon-watch-2 since it's super heavy to
-# build and is experimental)
-all: clean salmon salmon-watch-legacy
+all: clean salmon salmon-watch
 
 .PHONY: test
 test:
 	go test --count 1 --race ./...
 	node --test cmd/salmon-watch-legacy/jstest/*.js
-	cargo test --manifest-path cmd/salmon-watch-2/Cargo.toml
+	cargo test --manifest-path cmd/salmon-watch/Cargo.toml
 
 .PHONY: generate
 generate:
@@ -48,27 +46,27 @@ salmon-watch-legacy: generate
 		-ldflags "$(LDFLAGS)" \
 		./cmd/salmon-watch-legacy
 
-.PHONY: salmon-watch-2
-salmon-watch-2:
-	@echo Building bin/salmon-watch-2$(GOEXE)
+.PHONY: salmon-watch
+salmon-watch:
+	@echo Building bin/salmon-watch$(GOEXE)
 	@SALMON_WATCH_BUILD_VERSION='$(patsubst v%,%,$(VERSION))' \
 		SALMON_WATCH_BUILD_COMMIT='$(COMMIT)' \
 		SALMON_WATCH_BUILD_DATE='$(DATE)' \
 		SALMON_WATCH_BUILT_BY='make' \
-		cargo build --release --manifest-path cmd/salmon-watch-2/Cargo.toml
+		cargo build --release --manifest-path cmd/salmon-watch/Cargo.toml
 	@mkdir -p bin
-	@cp cmd/salmon-watch-2/target/release/salmon-watch$(GOEXE) bin/salmon-watch-2$(GOEXE)
+	@cp cmd/salmon-watch/target/release/salmon-watch$(GOEXE) bin/salmon-watch$(GOEXE)
 
-.PHONY: salmon-watch-2-debug
-salmon-watch-2-debug:
-	@echo Building bin/salmon-watch-2-debug$(GOEXE)
+.PHONY: salmon-watch-debug
+salmon-watch-debug:
+	@echo Building bin/salmon-watch-debug$(GOEXE)
 	@SALMON_WATCH_BUILD_VERSION='$(patsubst v%,%,$(VERSION))' \
 		SALMON_WATCH_BUILD_COMMIT='$(COMMIT)' \
 		SALMON_WATCH_BUILD_DATE='$(DATE)' \
 		SALMON_WATCH_BUILT_BY='make' \
-		cargo build --manifest-path cmd/salmon-watch-2/Cargo.toml
+		cargo build --manifest-path cmd/salmon-watch/Cargo.toml
 	@mkdir -p bin
-	@cp cmd/salmon-watch-2/target/debug/salmon-watch$(GOEXE) bin/salmon-watch-2-debug$(GOEXE)
+	@cp cmd/salmon-watch/target/debug/salmon-watch$(GOEXE) bin/salmon-watch-debug$(GOEXE)
 
 .PHONY: clean
 clean:
@@ -81,7 +79,7 @@ INSTALL := install
 INSTALL_FLAGS := -m 755
 
 .PHONY: install
-install: install-salmon install-salmon-watch-legacy
+install: install-salmon install-salmon-watch
 
 .PHONY: install-salmon
 install-salmon:
@@ -90,3 +88,7 @@ install-salmon:
 .PHONY: install-salmon-watch-legacy
 install-salmon-watch-legacy:
 	$(INSTALL) $(INSTALL_FLAGS) -D bin/salmon-watch-legacy$(GOEXE) $(BINDIR)/salmon-watch-legacy$(GOEXE)
+
+.PHONY: install-salmon-watch
+install-salmon-watch:
+	$(INSTALL) $(INSTALL_FLAGS) -D bin/salmon-watch$(GOEXE) $(BINDIR)/salmon-watch$(GOEXE)

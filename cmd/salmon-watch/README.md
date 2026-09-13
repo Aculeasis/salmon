@@ -1,6 +1,6 @@
 # salmon-watch
 
-Salmon Watch 2 reads the existing Salmon Watch configuration from
+Salmon Watch reads the existing Salmon Watch configuration from
 `$XDG_CONFIG_HOME/salmon-watch/salmon-watch.yml` (normally
 `~/.config/salmon-watch/salmon-watch.yml`). A custom file can be selected with
 `--config`.
