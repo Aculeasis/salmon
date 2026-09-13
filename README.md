@@ -4,7 +4,7 @@ Salmon is a simple monitoring utility which checks the health of your local
 machine and/or remote server(s), and helps you notice timely if something is
 wrong.
 
-![Salmon demo](https://dmitryfrank.com/_media/projects/salmon/salmon_demo.gif)
+![Salmon demo](https://dmitryfrank.com/_media/projects/salmon/salmon_rust_demo.gif)
 
 ## Project history and naming
 
@@ -291,8 +291,8 @@ for a platform-initialization reason rather than a geometry problem.
 
 ## Screenshots
 
-![Salmon Watch OK](https://dmitryfrank.com/_media/projects/salmon/salmon_screenshot_ok.png)
-![Salmon Watch Warn1](https://dmitryfrank.com/_media/projects/salmon/salmon_screenshot_warn1.png)
+![Salmon Watch OK](https://dmitryfrank.com/_media/projects/salmon/salmon_rust_screenshot_ok.png)
+![Salmon Watch Warn1](https://dmitryfrank.com/_media/projects/salmon/salmon_rust_screenshot_warn.png)
 
 ## Documentation
 
