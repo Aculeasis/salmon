@@ -1,5 +1,67 @@
 # Changelog
 
+## [1.1.0](https://github.com/dimonomid/salmon/compare/v1.0.0...v1.1.0) (2026-09-14)
+
+
+### Features
+
+* Add "Restart and reload configuration" to tray menu ([c97d75c](https://github.com/dimonomid/salmon/commit/c97d75c909266406a0edae79aecb79e0844a2868))
+* add connection timeout and improve incident wording ([09ae0ea](https://github.com/dimonomid/salmon/commit/09ae0ea2997e89fe15a03d8f86a97d87a8885ade))
+* Add debug makefile target ([dadf281](https://github.com/dimonomid/salmon/commit/dadf281755285657d323c9e53bedf39733cb9ae7))
+* **ci:** Implement e2e test for the new Rust salmon-watch ([ac59b55](https://github.com/dimonomid/salmon/commit/ac59b55a8344fe2bda89949ce17006ade40f446d))
+* Implement --version in Rust salmon-watch ([25f1724](https://github.com/dimonomid/salmon/commit/25f17247587d4d5bed029f7359100a24c7ea69b8))
+* Implement actual comms with salmon server ([09a3687](https://github.com/dimonomid/salmon/commit/09a36878dc56241906ffc994a4a725fae2d42828))
+* Improve Rust client app icon ([03150cd](https://github.com/dimonomid/salmon/commit/03150cd87cb86f865f5eff6a97c96ffb0e5db093))
+* in Rust client setup command, autodetect old launcher ([74c53f2](https://github.com/dimonomid/salmon/commit/74c53f2b7694609b0e4f007359bcc80b94411d52))
+* In Rust client, add better shutdown and logging ([b664648](https://github.com/dimonomid/salmon/commit/b66464844d3eb39d8549377defd9b80290286a27))
+* In rust client, add more tests, implement timestamps coloring ([c2358b4](https://github.com/dimonomid/salmon/commit/c2358b4991fa3a9952d5f8e32ff79866149adb9c))
+* In Rust client, bring app to foreground ([c9810b7](https://github.com/dimonomid/salmon/commit/c9810b726e4e70addc8944c2ca382089a7e7565b))
+* In Rust client, implement better logging ([0f26155](https://github.com/dimonomid/salmon/commit/0f26155f035c620c6a5140281022d015a760c8c9))
+* In Rust client, implement setup command ([0fe2c9b](https://github.com/dimonomid/salmon/commit/0fe2c9b42f458103565ce31c498ef13a0eaae039))
+* In Rust client, implement ssh tunnel ([33d6c4d](https://github.com/dimonomid/salmon/commit/33d6c4df0bde716f8b7cf80f21445bb769abb11f))
+* In Rust client, implement TLS + bearer auth ([97bd9e8](https://github.com/dimonomid/salmon/commit/97bd9e8ec19a12279ccec90c10145285da49177b))
+* In Rust client, improve app icon ([aceaf99](https://github.com/dimonomid/salmon/commit/aceaf992d4d27747e81af804a1d237b887062b51))
+* In Rust client, make UI a bit nicer ([6ca6d3b](https://github.com/dimonomid/salmon/commit/6ca6d3be7ea09c9b50cadd8187b2d3e4213ac9d1))
+* In Rust client, preserve window geometry ([c019d6c](https://github.com/dimonomid/salmon/commit/c019d6c4efc4401c068f0eb8b9bb6f245bd12810))
+* In Rust client, reduce title padding ([b54db2d](https://github.com/dimonomid/salmon/commit/b54db2d7a985e7307dc9aa16b3a7ba9feef6e22a))
+* In Rust client, use slightly larger fonts ([91a06bc](https://github.com/dimonomid/salmon/commit/91a06bc4c92eef40e925c55fe3e56a4805a04795))
+* In Rust client, wrap text as much as we can ([68f0dd4](https://github.com/dimonomid/salmon/commit/68f0dd43e5c6d5433dcd149380d82db9e9c8246b))
+* In Rust clients, round corners of a snoozed incident ([6d030a3](https://github.com/dimonomid/salmon/commit/6d030a342b1cf4326642ad254068d08eb9ed51e7))
+* in Rust launcher, add X- marker ([4ada885](https://github.com/dimonomid/salmon/commit/4ada88566ae50585fbbe803c9b864c824af0320b))
+* Make local addr optional with ssh tunnel ([9d5d0e1](https://github.com/dimonomid/salmon/commit/9d5d0e12cb515dec4a7e0a2013bea8e0539aabf2))
+* Migrate Rust salmon-watch to clap for arg parsing ([f8c656a](https://github.com/dimonomid/salmon/commit/f8c656ae69b21922e39e2321ae1f08d594c25ad9))
+* optimize Rust client binary for size ([c1b1b98](https://github.com/dimonomid/salmon/commit/c1b1b9816c7e9cf9803d71fc16b13ea2abe14030))
+* Rename salmon-watch to salmon-watch-legacy ([468985d](https://github.com/dimonomid/salmon/commit/468985d08eac73a3ef0956bdfc37ecb75e5bc908))
+* Rename salmon-watch-2 to salmon-watch ([1e5ae8f](https://github.com/dimonomid/salmon/commit/1e5ae8fa9815d5e225ceb4588489c44101ca2aa4))
+* Retry failed persistence less frequently ([a8cb86e](https://github.com/dimonomid/salmon/commit/a8cb86e943824ac7f9f397c5291712028993fd33))
+* Rust salmon-client UI draft ([073b11a](https://github.com/dimonomid/salmon/commit/073b11a1388c20fa4b89d6da2e30bff88061a2f6))
+* Send notification when snooze expires ([81da57b](https://github.com/dimonomid/salmon/commit/81da57be8c8b97135aa541e9f6062e6506920a2b))
+* Set section header color properly ([15690fe](https://github.com/dimonomid/salmon/commit/15690fed6a3d64b6fa919ee788f9ec39526ac48d))
+* Split legacy and new salmon-watch state files safely ([5295553](https://github.com/dimonomid/salmon/commit/52955534e52d09e7be61673b8969e1f29e78e059))
+* Support custom tunnel commands in Rust salmon-watch ([7213181](https://github.com/dimonomid/salmon/commit/7213181adfe2900ae56e34866922729e42d3e8b1))
+* Support forced exit on second SIGINT in Rust salmon-watch ([6d7f901](https://github.com/dimonomid/salmon/commit/6d7f90124d47e1bf77794ad8a41d8251bffbe9ab))
+
+
+### Bug Fixes
+
+* Bring Rust client time format on par with Go client ([579c1bb](https://github.com/dimonomid/salmon/commit/579c1bbeddfe0b3f8dadef978362280889572851))
+* Don't build Rust client on the default makefile target ([2b93bc7](https://github.com/dimonomid/salmon/commit/2b93bc7ba8f628ecbb3f137aa92c01758451a19c))
+* Don't use notification urgency to unbreak macos build ([f415ce8](https://github.com/dimonomid/salmon/commit/f415ce88fcbc299413a907a703624b3141ec39ac))
+* Error out on empty servers list in Rust salmon-watch ([d449bb7](https://github.com/dimonomid/salmon/commit/d449bb79c97586e16073803829ff7eff48e7b232))
+* Fix Makefile after renaming Rust binary ([00c96fd](https://github.com/dimonomid/salmon/commit/00c96fda71798b26964f42d6b171d800324f94dd))
+* Get rid of flickering when restoring GUI window ([13843a7](https://github.com/dimonomid/salmon/commit/13843a7d70a566a04e29679460076605f1409dd8))
+* Handle not only SIGINT but also SIGTERM ([2bafa74](https://github.com/dimonomid/salmon/commit/2bafa74003a4ec285a46734b43365d01f120f7e6))
+* harden tunnel subprocess cleanup in Rust salmon-watch ([7b1d292](https://github.com/dimonomid/salmon/commit/7b1d292045905926794876dc786fde17f8349ec1))
+* In Rust client, bring GUI window to focus ([0b67463](https://github.com/dimonomid/salmon/commit/0b67463788b34f110c15d22cdb12fdf29ce15e30))
+* In Rust client, don't reuse assets from Go ([6ccec3b](https://github.com/dimonomid/salmon/commit/6ccec3bc4e51c77bb0e5b992f7d5e0c4d2d2d5e6))
+* In Rust client, fix snoozing internal incidents ([c5b5879](https://github.com/dimonomid/salmon/commit/c5b587983d905eb6268d316a4197dee3630b4435))
+* In Rust client, fix tray icon flashing cadence ([28e923f](https://github.com/dimonomid/salmon/commit/28e923f7293b87a481d0ea339be50fda2941a113))
+* In Rust client, move separator out of incident card ([3ace2ae](https://github.com/dimonomid/salmon/commit/3ace2ae3025c077d31e0471bdae45d5270fd4052))
+* In Rust client, prevent icon from taking up horizontal space ([980559a](https://github.com/dimonomid/salmon/commit/980559a8a2e356bde53ee8bb404b61c1b68acda6))
+* In Rust salmon-watch, persist snooze changes before committing ([0323bdd](https://github.com/dimonomid/salmon/commit/0323bddef9fb9e3ce6f9d45ccee94affd9be878b))
+* in Rust watch, bound and serialize desktop notifications ([9c90313](https://github.com/dimonomid/salmon/commit/9c903138dfb1d9ea16abce7d8fccd3c701feef29))
+* **ui:** Use more meaningful default size for GUI window ([dc2fd65](https://github.com/dimonomid/salmon/commit/dc2fd65328d77b6f1ab64afbaa75d649d503615c))
+
 ## 1.0.0 (2026-09-05)
 
 
