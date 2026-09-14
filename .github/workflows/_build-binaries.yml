@@ -51,7 +51,7 @@ jobs:
       - name: Package salmon
         run: |
           mkdir release
-          tar -czf "release/salmon_${ARTIFACT_VERSION}_linux_${ARTIFACT_ARCH}.tar.gz" -C bin salmon
+          tar -czf "release/salmon-${ARTIFACT_VERSION}_linux_${ARTIFACT_ARCH}.tar.gz" -C bin salmon
 
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0.24.2
@@ -64,9 +64,9 @@ jobs:
       - name: Generate SBOM and signatures
         run: |
           bash util/prepare_release_artifact.sh \
-            "release/salmon_${ARTIFACT_VERSION}_linux_${ARTIFACT_ARCH}.tar.gz" \
+            "release/salmon-${ARTIFACT_VERSION}_linux_${ARTIFACT_ARCH}.tar.gz" \
             bin/salmon \
-            "salmon_${ARTIFACT_VERSION}_linux_${ARTIFACT_ARCH}"
+            "salmon-${ARTIFACT_VERSION}_linux_${ARTIFACT_ARCH}"
 
       - name: Upload intermediary salmon artifacts
         uses: actions/upload-artifact@v6
@@ -131,14 +131,14 @@ jobs:
         if: matrix.os != 'windows'
         run: |
           mkdir release
-          tar -czf "release/salmon-watch-legacy_${ARTIFACT_VERSION}_${{ matrix.artifact_os }}_${ARTIFACT_ARCH}.tar.gz" -C bin salmon-watch-legacy
+          tar -czf "release/salmon-watch-LEGACY-WEB-${ARTIFACT_VERSION}_${{ matrix.artifact_os }}_${ARTIFACT_ARCH}.tar.gz" -C bin salmon-watch-legacy
 
       - name: Package Windows binary
         if: matrix.os == 'windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path release
-          Compress-Archive -Path bin/salmon-watch-legacy.exe -DestinationPath "release/salmon-watch-legacy_${env:ARTIFACT_VERSION}_windows_${env:ARTIFACT_ARCH}.zip"
+          Compress-Archive -Path bin/salmon-watch-legacy.exe -DestinationPath "release/salmon-watch-LEGACY-WEB-${env:ARTIFACT_VERSION}_windows_${env:ARTIFACT_ARCH}.zip"
 
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0.24.2
@@ -152,13 +152,13 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ matrix.os }}" == "windows" ]]; then
-            archive="release/salmon-watch-legacy_${ARTIFACT_VERSION}_windows_${ARTIFACT_ARCH}.zip"
+            archive="release/salmon-watch-LEGACY-WEB-${ARTIFACT_VERSION}_windows_${ARTIFACT_ARCH}.zip"
             binary="bin/salmon-watch-legacy.exe"
-            signature_basename="salmon-watch-legacy.exe_${ARTIFACT_VERSION}_windows_${ARTIFACT_ARCH}"
+            signature_basename="salmon-watch-LEGACY-WEB-${ARTIFACT_VERSION}_windows_${ARTIFACT_ARCH}.exe"
           else
-            archive="release/salmon-watch-legacy_${ARTIFACT_VERSION}_${{ matrix.artifact_os }}_${ARTIFACT_ARCH}.tar.gz"
+            archive="release/salmon-watch-LEGACY-WEB-${ARTIFACT_VERSION}_${{ matrix.artifact_os }}_${ARTIFACT_ARCH}.tar.gz"
             binary="bin/salmon-watch-legacy"
-            signature_basename="salmon-watch-legacy_${ARTIFACT_VERSION}_${{ matrix.artifact_os }}_${ARTIFACT_ARCH}"
+            signature_basename="salmon-watch-LEGACY-WEB-${ARTIFACT_VERSION}_${{ matrix.artifact_os }}_${ARTIFACT_ARCH}"
           fi
           bash util/prepare_release_artifact.sh "$archive" "$binary" "$signature_basename"
 
@@ -231,14 +231,14 @@ jobs:
         if: matrix.os != 'windows'
         run: |
           mkdir release
-          tar -czf "release/salmon-watch_${ARTIFACT_VERSION}_${{ matrix.artifact_os }}_${ARTIFACT_ARCH}.tar.gz" -C bin salmon-watch
+          tar -czf "release/salmon-watch-${ARTIFACT_VERSION}_${{ matrix.artifact_os }}_${ARTIFACT_ARCH}.tar.gz" -C bin salmon-watch
 
       - name: Package Windows binary
         if: matrix.os == 'windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path release
-          Compress-Archive -Path bin/salmon-watch.exe -DestinationPath "release/salmon-watch_${env:ARTIFACT_VERSION}_windows_${env:ARTIFACT_ARCH}.zip"
+          Compress-Archive -Path bin/salmon-watch.exe -DestinationPath "release/salmon-watch-${env:ARTIFACT_VERSION}_windows_${env:ARTIFACT_ARCH}.zip"
 
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0.24.2
@@ -252,13 +252,13 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ matrix.os }}" == "windows" ]]; then
-            archive="release/salmon-watch_${ARTIFACT_VERSION}_windows_${ARTIFACT_ARCH}.zip"
+            archive="release/salmon-watch-${ARTIFACT_VERSION}_windows_${ARTIFACT_ARCH}.zip"
             binary="bin/salmon-watch.exe"
-            signature_basename="salmon-watch.exe_${ARTIFACT_VERSION}_windows_${ARTIFACT_ARCH}"
+            signature_basename="salmon-watch-${ARTIFACT_VERSION}_windows_${ARTIFACT_ARCH}.exe"
           else
-            archive="release/salmon-watch_${ARTIFACT_VERSION}_${{ matrix.artifact_os }}_${ARTIFACT_ARCH}.tar.gz"
+            archive="release/salmon-watch-${ARTIFACT_VERSION}_${{ matrix.artifact_os }}_${ARTIFACT_ARCH}.tar.gz"
             binary="bin/salmon-watch"
-            signature_basename="salmon-watch_${ARTIFACT_VERSION}_${{ matrix.artifact_os }}_${ARTIFACT_ARCH}"
+            signature_basename="salmon-watch-${ARTIFACT_VERSION}_${{ matrix.artifact_os }}_${ARTIFACT_ARCH}"
           fi
           bash util/prepare_release_artifact.sh "$archive" "$binary" "$signature_basename"
 

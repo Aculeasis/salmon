@@ -115,7 +115,7 @@ The easiest way to install both `salmon` and `salmon-watch` to monitor local
 machine health is as follows:
 
 First, download the [latest prebuilt binaries from GitHub](https://github.com/dimonomid/salmon/releases/latest),
-like `salmon_x.y.z_linux_amd64.tar.gz` and `salmon-watch_x.y.z_linux_amd64.tar.gz`,
+like `salmon-x.y.z_linux_amd64.tar.gz` and `salmon-watch-x.y.z_linux_amd64.tar.gz`,
 and unpack them. You'll get two binaries: `salmon` and `salmon-watch`.
 
 Then:
