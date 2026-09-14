@@ -142,6 +142,35 @@ fn snooze_failure_notification(action: &SnoozeAction, details: &str) -> Option<(
     ))
 }
 
+/// Builds one reminder for each still-ongoing incident whose snooze expired.
+///
+/// This is evaluated only after the expiration map is durable. Explicit
+/// unsnoozes therefore stay silent, and incidents that resolved while hidden
+/// are absent from the snapshot and do not produce a notification.
+fn snooze_expiry_notifications(
+    action: &SnoozeAction,
+    state: &AppState,
+    now: OffsetDateTime,
+) -> Vec<(String, String)> {
+    let SnoozeAction::Expire { keys } = action else {
+        return Vec::new();
+    };
+    let active = state.snapshot(now).active;
+    keys.iter()
+        .filter_map(|key| {
+            active
+                .iter()
+                .find(|incident| incident.key == *key)
+                .map(|incident| {
+                    (
+                        format!("Snooze ended: {}", incident.key),
+                        incident.details.clone(),
+                    )
+                })
+        })
+        .collect()
+}
+
 /// Queues a runtime notification when desktop delivery initialized successfully.
 fn enqueue_desktop_notification(
     notifications: &mut Option<NotificationDispatcher>,
@@ -396,6 +425,13 @@ async fn run_async(
                             let committed = reducer.reduce(Event::SnoozesPersisted { snoozes });
                             debug_assert!(committed.effects.is_empty());
                             changed |= committed.changed;
+                            for (title, body) in snooze_expiry_notifications(
+                                &action,
+                                reducer.state(),
+                                wall_clock_now(),
+                            ) {
+                                enqueue_desktop_notification(&mut notifications, title, body);
+                            }
                         }
                         Ok(Err(error)) => {
                             if automatic_expiry {
@@ -690,5 +726,42 @@ full"#,
         assert!(snooze_persistence_is_due(&expire, Some(retry_at), retry_at));
         assert!(snooze_persistence_is_due(&set, Some(retry_at), now));
         assert!(snooze_persistence_is_due(&remove, Some(retry_at), now));
+    }
+
+    #[test]
+    fn automatic_expiration_reminds_only_for_still_ongoing_incidents() {
+        let mut reducer = Reducer::new(AppState::new(vec!["home".into()], BTreeMap::new()));
+        reducer.reduce(notification(
+            "home",
+            vec![incident("disk", IncidentState::Error, "Only 2% free")],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        let expire = SnoozeAction::Expire {
+            keys: vec!["home.disk".into(), "home.resolved".into()],
+        };
+        assert_eq!(
+            snooze_expiry_notifications(&expire, reducer.state(), at(100)),
+            [("Snooze ended: home.disk".into(), "Only 2% free".into())]
+        );
+    }
+
+    #[test]
+    fn manual_unsnooze_does_not_create_a_reminder() {
+        let mut reducer = Reducer::new(AppState::new(vec!["home".into()], BTreeMap::new()));
+        reducer.reduce(notification(
+            "home",
+            vec![incident("disk", IncidentState::Warning, "Getting full")],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        let remove = SnoozeAction::Remove {
+            key: "home.disk".into(),
+        };
+        assert!(snooze_expiry_notifications(&remove, reducer.state(), at(100)).is_empty());
     }
 }

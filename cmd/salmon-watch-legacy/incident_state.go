@@ -92,6 +92,9 @@ type incidentState struct {
 	// OnUpdate is called after the classified snapshot changes. The application
 	// uses it to publish the same snapshot to the webserver and tray.
 	OnUpdate func(snapshot incidentSnapshot)
+	// OnSnoozeExpired is called only for automatically unsnoozed incidents that
+	// are still present in the latest combined snapshot.
+	OnSnoozeExpired func(item salmon.ItemWContext)
 }
 
 // newIncidentState loads the persisted snoozes and initializes the shared
@@ -215,8 +218,24 @@ func (s *incidentState) watchSnoozeExpirations(ticker *clock.Ticker) {
 				s.logger.Log(logs.Info, "Snooze expired for incident %s", key)
 			}
 			if len(expired) > 0 {
+				s.notifySnoozeExpired(expired)
 				s.notifyUpdate()
 			}
+		}
+	}
+}
+
+func (s *incidentState) notifySnoozeExpired(expired []string) {
+	if s.OnSnoozeExpired == nil {
+		return
+	}
+	expiredKeys := make(map[string]struct{}, len(expired))
+	for _, key := range expired {
+		expiredKeys[key] = struct{}{}
+	}
+	for _, item := range s.ongoingIncidents.Get() {
+		if _, ok := expiredKeys[string(item.Key)]; ok {
+			s.OnSnoozeExpired(item)
 		}
 	}
 }

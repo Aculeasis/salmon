@@ -119,6 +119,7 @@ func newSalmonWatchCore(params salmonWatchCoreParams) (*salmonWatchCore, error) 
 	})
 	core.publishServerStatuses()
 	incidentState.OnUpdate = core.onIncidentUpdate
+	incidentState.OnSnoozeExpired = core.onSnoozeExpired
 
 	core.combiner, err = wsclient.NewCombiner(wsclient.CombinerParams{
 		Config:                  params.Config,
@@ -133,6 +134,12 @@ func newSalmonWatchCore(params salmonWatchCoreParams) (*salmonWatchCore, error) 
 		return nil, err
 	}
 	return core, nil
+}
+
+func (c *salmonWatchCore) onSnoozeExpired(item salmon.ItemWContext) {
+	if c.notifications != nil {
+		c.notifications.Push("Snooze ended: "+string(item.Key), item.Details)
+	}
 }
 
 func (c *salmonWatchCore) forgetStaleIncident(key string) bool {

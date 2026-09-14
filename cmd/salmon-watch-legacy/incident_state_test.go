@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/dimonomid/salmon"
 )
 
 func TestSnoozeDeadlineUsesWallClock(t *testing.T) {
@@ -25,5 +27,23 @@ func TestSnoozeDeadlineUsesWallClock(t *testing.T) {
 	}
 	if want := now.Round(0).Add(time.Hour); !deadline.Equal(want) {
 		t.Fatalf("snooze deadline = %s, want %s", deadline, want)
+	}
+}
+
+func TestExpiredSnoozeCallbackSkipsResolvedIncident(t *testing.T) {
+	state := &incidentState{}
+	called := false
+	state.OnSnoozeExpired = func(item salmon.ItemWContext) {
+		called = true
+	}
+
+	state.ongoingIncidents.Set([]*salmon.ItemWContext{{
+		Item: salmon.Item{Key: "server.disk"},
+	}})
+	state.ongoingIncidents.Set(nil) // The incident resolved while snoozed.
+	state.notifySnoozeExpired([]string{"server.disk"})
+
+	if called {
+		t.Fatal("resolved incident generated a snooze-expiration callback")
 	}
 }

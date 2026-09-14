@@ -58,6 +58,16 @@ func (n *recordingNotificator) titles() []string {
 	return titles
 }
 
+func (n *recordingNotificator) texts() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	texts := make([]string, 0, len(n.records))
+	for _, record := range n.records {
+		texts = append(texts, record.Text)
+	}
+	return texts
+}
+
 type mockSalmonServer struct {
 	server      *httptest.Server
 	mu          sync.Mutex
@@ -580,15 +590,20 @@ func TestCoreSnoozedIncidentDoesNotNotify(t *testing.T) {
 	if len(message.OngoingIncidents.Alerting) != 1 || string(message.OngoingIncidents.Alerting[0].Key) != "server.disk" {
 		t.Fatalf("unexpected unsnoozed status: %#v", message.OngoingIncidents)
 	}
+	if got := notifications.titles(); len(got) != 0 {
+		t.Fatalf("manual unsnooze generated notifications: %#v", got)
+	}
 }
 
 func TestCoreSnoozeExpirationPublishesUpdate(t *testing.T) {
 	// Advance a mock clock to cover expiration without waiting for wall time.
 	salmonServer := newMockSalmonServer(t)
 	mockClock := clock.NewMock()
+	notifications := &recordingNotificator{}
 	core, err := newSalmonWatchCore(salmonWatchCoreParams{
 		Config:              wsclient.Config{Servers: []wsclient.ConfigServer{{ID: "server", Addr: salmonServer.address()}}},
 		StatePath:           t.TempDir() + "/state.json",
+		Notifications:       notifications,
 		Clock:               mockClock,
 		Logger:              watchTestLogger,
 		SnoozeCheckInterval: time.Minute,
@@ -635,6 +650,12 @@ func TestCoreSnoozeExpirationPublishesUpdate(t *testing.T) {
 	})
 	if len(message.OngoingIncidents.Alerting) != 1 || string(message.OngoingIncidents.Alerting[0].Key) != "server.disk" {
 		t.Fatalf("expired snooze did not return to alerting: %#v", message.OngoingIncidents)
+	}
+	if got := notifications.waitForCount(t, 1); !reflect.DeepEqual(got, []string{"Snooze ended: server.disk"}) {
+		t.Fatalf("expiration notifications = %#v", got)
+	}
+	if got := notifications.texts()[0]; got != "network is down" {
+		t.Fatalf("expiration notification details = %q", got)
 	}
 }
 
