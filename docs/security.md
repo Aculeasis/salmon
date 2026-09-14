@@ -133,7 +133,10 @@ sudo openssl req -x509 -newkey rsa:3072 -sha256 -days 3650 -nodes \
   -keyout /etc/salmon/tls/privkey.pem \
   -out /etc/salmon/tls/cert.pem \
   -subj "/CN=myserverforcert.com" \
-  -addext "subjectAltName=DNS:myserverforcert.com"
+  -addext "subjectAltName=DNS:myserverforcert.com" \
+  -addext "basicConstraints=critical,CA:FALSE" \
+  -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+  -addext "extendedKeyUsage=serverAuth"
 
 sudo chown root:salmon /etc/salmon/tls/privkey.pem /etc/salmon/tls/cert.pem
 sudo chmod 0640 /etc/salmon/tls/privkey.pem /etc/salmon/tls/cert.pem
@@ -146,8 +149,8 @@ In the end, with a normal certificate or a self-signed one, the `salmon` webserv
     - webserver:
         listenAddress: "0.0.0.0:41990"
         tls:
-          certFile: "/path/to/cert.pem"     # TODO: use actual path
-          keyFile: "/path/to/privkey.pem"   # TODO: use actual path
+          certFile: "/etc/salmon/tls/cert.pem"     # Adjust if needed
+          keyFile: "/etc/salmon/tls/privkey.pem"   # Adjust if needed
 ```
 
 On the `salmon-watch` side, we need to specify that we want to use TLS. If the server certificate is issued by a CA trusted by your operating system, we just need to add an empty `tls` object to the corresponding server:
@@ -164,8 +167,8 @@ If the certificate was self-signed though, or if hostname in `addr` is different
 
 ```yaml
       tls:
-        caFile: "/path/to/cert.pem"   # A copy of the self-signed cert.pem
-        serverName: myserverforcert.com      # Hostname used in the certificate
+        caFile: "/path/to/cert.pem"       # A copy of the self-signed cert.pem
+        serverName: myserverforcert.com   # Hostname used in the certificate
 ```
 
 With that, TLS should be set up now, and we move on to the bearer token.
