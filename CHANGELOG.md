@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.1](https://github.com/dimonomid/salmon/compare/v1.1.0...v1.1.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* **salmon-watch:** suggest setup when default config is missing ([eef2476](https://github.com/dimonomid/salmon/commit/eef2476fca0affada566d1e969653d17836ef820))
+* suggest config-only setup as well when config is missing ([87231ff](https://github.com/dimonomid/salmon/commit/87231ff0ec8ef3fc205ee1ea370ca2fa2439f209))
+
 ## [1.1.0](https://github.com/dimonomid/salmon/compare/v1.0.0...v1.1.0) (2026-09-14)
 
 
