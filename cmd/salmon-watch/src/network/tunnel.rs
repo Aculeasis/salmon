@@ -139,9 +139,7 @@ async fn run_with_spec(
                 continue;
             }
         };
-        // On Unix this is also the process-group ID because `spawn` assigns the
-        // child as leader. Keep it after `wait`, when `Child::id()` becomes `None`.
-        let process_group_id = child.id();
+        let isolation = ProcessIsolation::attach(&child);
 
         let stdout = child.stdout.take().expect("tunnel stdout is piped");
         let stderr = child.stderr.take().expect("tunnel stderr is piped");
@@ -189,7 +187,7 @@ async fn run_with_spec(
                     stop_generation(
                         &server.id,
                         &mut child,
-                        process_group_id,
+                        &isolation,
                         stdout_task,
                         stderr_task,
                     )
@@ -218,7 +216,7 @@ async fn run_with_spec(
                 match outcome {
                     WhileReady::Exited(status) => {
                         let _ = connection.await;
-                        terminate_process_group(process_group_id);
+                        isolation.terminate();
                         let details = failure_details(
                             &server.id,
                             status,
@@ -238,7 +236,7 @@ async fn run_with_spec(
                         stop_generation(
                             &server.id,
                             &mut child,
-                            process_group_id,
+                            &isolation,
                             stdout_task,
                             stderr_task,
                         )
@@ -250,7 +248,7 @@ async fn run_with_spec(
                         stop_generation(
                             &server.id,
                             &mut child,
-                            process_group_id,
+                            &isolation,
                             stdout_task,
                             stderr_task,
                         )
@@ -260,7 +258,7 @@ async fn run_with_spec(
                 }
             }
             BeforeReady::Exited(status) => {
-                terminate_process_group(process_group_id);
+                isolation.terminate();
                 let details = failure_details(
                     &server.id,
                     status,
@@ -280,7 +278,7 @@ async fn run_with_spec(
                 stop_generation(
                     &server.id,
                     &mut child,
-                    process_group_id,
+                    &isolation,
                     stdout_task,
                     stderr_task,
                 )
@@ -326,11 +324,11 @@ fn isolate_from_terminal_signals(_command: &mut Command) {}
 async fn stop_generation(
     server_id: &str,
     child: &mut Child,
-    process_group_id: Option<u32>,
+    isolation: &ProcessIsolation,
     stdout_task: JoinHandle<CapturedOutput>,
     stderr_task: JoinHandle<CapturedOutput>,
 ) {
-    stop_child(child, process_group_id).await;
+    stop_child(child, isolation).await;
     let output = drain_output_readers(stdout_task, stderr_task).await;
     if output.timed_out {
         log::warn!(
@@ -340,10 +338,63 @@ async fn stop_generation(
 }
 
 /// Requests tree termination where supported and reaps the direct child.
-async fn stop_child(child: &mut Child, process_group_id: Option<u32>) {
-    terminate_process_group(process_group_id);
+async fn stop_child(child: &mut Child, isolation: &ProcessIsolation) {
+    isolation.terminate();
     let _ = child.start_kill();
     let _ = child.wait().await;
+}
+
+/// Tracks platform-specific lifecycle containment for a single tunnel process generation.
+struct ProcessIsolation {
+    #[cfg(unix)]
+    process_group_id: Option<u32>,
+    #[cfg(windows)]
+    job: Option<TunnelJob>,
+}
+
+impl ProcessIsolation {
+    fn attach(child: &Child) -> Self {
+        #[cfg(unix)]
+        {
+            Self {
+                process_group_id: child.id(),
+            }
+        }
+        #[cfg(windows)]
+        {
+            let job = match TunnelJob::new() {
+                Ok(job) => {
+                    if let Err(error) = job.assign(child) {
+                        log::warn!("failed to assign tunnel process to job object: {error}");
+                    }
+                    Some(job)
+                }
+                Err(error) => {
+                    log::warn!("failed to create job object for tunnel: {error}");
+                    None
+                }
+            };
+            Self { job }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = child;
+            Self {}
+        }
+    }
+
+    fn terminate(&self) {
+        #[cfg(unix)]
+        {
+            terminate_process_group(self.process_group_id);
+        }
+        #[cfg(windows)]
+        {
+            if let Some(job) = &self.job {
+                job.terminate();
+            }
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -363,9 +414,131 @@ fn terminate_process_group(process_group_id: Option<u32>) {
     }
 }
 
-#[cfg(not(unix))]
-/// Other platforms rely on direct-child termination plus bounded pipe draining.
-fn terminate_process_group(_process_group_id: Option<u32>) {}
+#[cfg(windows)]
+#[repr(C)]
+struct IoCounters {
+    read_operation_count: u64,
+    write_operation_count: u64,
+    other_operation_count: u64,
+    read_transfer_count: u64,
+    write_transfer_count: u64,
+    other_transfer_count: u64,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct JobobjectBasicLimitInformation {
+    per_process_user_time_limit: i64,
+    per_job_user_time_limit: i64,
+    limit_flags: u32,
+    minimum_working_set_size: usize,
+    maximum_working_set_size: usize,
+    active_process_limit: u32,
+    affinity: usize,
+    priority_class: u32,
+    scheduling_class: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct JobobjectExtendedLimitInformation {
+    basic_limit_information: JobobjectBasicLimitInformation,
+    io_info: IoCounters,
+    process_memory_limit: usize,
+    job_memory_limit: usize,
+    peak_process_memory_limit: usize,
+    peak_job_memory_limit: usize,
+}
+
+#[cfg(windows)]
+const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
+#[cfg(windows)]
+const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: u32 = 9;
+
+#[cfg(windows)]
+unsafe extern "system" {
+    fn CreateJobObjectW(
+        lp_job_attributes: *mut std::ffi::c_void,
+        lp_name: *const u16,
+    ) -> *mut std::ffi::c_void;
+    fn SetInformationJobObject(
+        h_job: *mut std::ffi::c_void,
+        job_object_information_class: u32,
+        lp_job_object_information: *const std::ffi::c_void,
+        cb_job_object_information_length: u32,
+    ) -> i32;
+    fn AssignProcessToJobObject(
+        h_job: *mut std::ffi::c_void,
+        h_process: *mut std::ffi::c_void,
+    ) -> i32;
+    fn TerminateJobObject(h_job: *mut std::ffi::c_void, u_exit_code: u32) -> i32;
+    fn CloseHandle(h_object: *mut std::ffi::c_void) -> i32;
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+pub(crate) struct TunnelJob(std::os::windows::io::RawHandle);
+
+#[cfg(windows)]
+impl TunnelJob {
+    pub(crate) fn new() -> io::Result<Self> {
+        let handle = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let mut info: JobobjectExtendedLimitInformation = unsafe { std::mem::zeroed() };
+        info.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ret = unsafe {
+            SetInformationJobObject(
+                handle,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+                &info as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<JobobjectExtendedLimitInformation>() as u32,
+            )
+        };
+        if ret == 0 {
+            let error = io::Error::last_os_error();
+            unsafe { CloseHandle(handle) };
+            return Err(error);
+        }
+        Ok(Self(handle))
+    }
+
+    pub(crate) fn assign(&self, child: &Child) -> io::Result<()> {
+        let raw_handle = child.raw_handle().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "child process handle is unavailable")
+        })?;
+        let ret = unsafe { AssignProcessToJobObject(self.0, raw_handle) };
+        if ret == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn terminate(&self) {
+        if !self.0.is_null() {
+            unsafe {
+                TerminateJobObject(self.0, 1);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for TunnelJob {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+unsafe impl Send for TunnelJob {}
+#[cfg(windows)]
+unsafe impl Sync for TunnelJob {}
 
 async fn wait_to_restart(shutdown: &mut watch::Receiver<bool>, delay: Duration) -> bool {
     log::info!("tunnel will restart in {}s", delay.as_secs_f64());
@@ -632,7 +805,9 @@ mod tests {
     use crate::config::{
         CustomTunnelCommandConfig, SshTunnelConfig, TunnelConfig, TunnelReadinessProbeConfig,
     };
+    #[cfg(unix)]
     use futures_util::StreamExt;
+    #[cfg(unix)]
     use tokio::net::TcpListener;
     use tokio::time::timeout;
 
@@ -1089,5 +1264,54 @@ exit 7"#
             .await
             .expect("tunnel task did not stop")
             .unwrap();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn tunnel_job_terminates_child_process() {
+        let job = TunnelJob::new().expect("failed to create job object");
+        let mut command = tokio::process::Command::new("cmd.exe");
+        command
+            .args(&["/c", "ping 127.0.0.1 -n 30 >nul"])
+            .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        let mut child = command.spawn().expect("failed to spawn child");
+        job.assign(&child).expect("failed to assign child to job");
+
+        job.terminate();
+        let status = timeout(Duration::from_secs(3), child.wait())
+            .await
+            .expect("child did not terminate after job.terminate()")
+            .expect("failed to wait for child");
+        assert!(!status.success());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn tunnel_job_kills_child_process_when_handle_is_closed() {
+        let job = TunnelJob::new().expect("failed to create job object");
+        let mut command = tokio::process::Command::new("ping");
+        command
+            .args(&["127.0.0.1", "-n", "30"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        let mut child = command.spawn().expect("failed to spawn child");
+        job.assign(&child).expect("failed to assign child to job");
+
+        let start = std::time::Instant::now();
+        // Dropping the job object closes its handle, which triggers
+        // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and immediately kills the process
+        // (which was configured to ping for 30 seconds).
+        drop(job);
+
+        let status = timeout(Duration::from_secs(5), child.wait())
+            .await
+            .expect("child was not killed within deadline when job handle closed")
+            .expect("failed to wait for child");
+        let elapsed = start.elapsed();
+        // Ping -n 30 takes 30s. Being killed by job closure must happen in < 3s.
+        assert!(elapsed < Duration::from_secs(3), "child took too long to terminate: {elapsed:?}");
+        assert!(status.code().is_some());
     }
 }
