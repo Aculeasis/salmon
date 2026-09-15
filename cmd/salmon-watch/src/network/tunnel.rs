@@ -311,10 +311,12 @@ fn isolate_from_terminal_signals(command: &mut Command) {
 }
 
 #[cfg(windows)]
-/// Gives SSH a process group distinct from the parent console process.
+/// Gives SSH a process group distinct from the parent console process and hides
+/// its console window when launched from a GUI application.
 fn isolate_from_terminal_signals(command: &mut Command) {
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
 }
 
 #[cfg(not(any(unix, windows)))]
