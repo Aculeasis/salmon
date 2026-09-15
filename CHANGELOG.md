@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.0](https://github.com/dimonomid/salmon/compare/v1.1.1...v1.2.0) (2026-09-15)
+
+
+### Features
+
+* install salmon binary during setup ([519da2e](https://github.com/dimonomid/salmon/commit/519da2e86e7f8d9a28050601920ea3d5d7b685b8))
+* show sudo guidance for privileged setup commands ([88df66d](https://github.com/dimonomid/salmon/commit/88df66d0bcead2075f75988a383dedd0cb8eef31))
+* Start salmon service during setup ([67dc23b](https://github.com/dimonomid/salmon/commit/67dc23b1846f60e80bd95d497165995b96ce21fd))
+
+
+### Bug Fixes
+
+* **build:** build Linux salmon-watch on Ubuntu 20.04 ([3d5e018](https://github.com/dimonomid/salmon/commit/3d5e018bbcf59cda16c0ead420f399af96e0e3c2))
+* **build:** Disable CGO for portable salmon binaries ([491f037](https://github.com/dimonomid/salmon/commit/491f037221ce591034883b6e63d88728fca421e7))
+
 ## [1.1.1](https://github.com/dimonomid/salmon/compare/v1.1.0...v1.1.1) (2026-09-15)
 
 
