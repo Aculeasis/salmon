@@ -248,8 +248,8 @@ make salmon-watch
 To install built binaries under `/usr/local/bin`:
 
 ```sh
-sudo install-salmon
-sudo install-salmon-watch
+sudo make install-salmon
+sudo make install-salmon-watch
 ```
 
 The legacy Go client (serving local web ui) is not part of the default build.
