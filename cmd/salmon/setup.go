@@ -7,16 +7,18 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strings"
 
 	"github.com/dimonomid/salmon/internal/setup"
 )
 
 const (
-	defaultSalmonConfig = "/etc/salmon.yml"
-	salmonUserName      = "salmon"
-	salmonGroupName     = "salmon"
-	salmonSysusersPath  = "/usr/local/lib/sysusers.d/salmon.conf"
-	salmonUnitPath      = "/etc/systemd/system/salmon.service"
+	defaultSalmonConfig  = "/etc/salmon.yml"
+	salmonExecutablePath = "/usr/local/bin/salmon"
+	salmonUserName       = "salmon"
+	salmonGroupName      = "salmon"
+	salmonSysusersPath   = "/usr/local/lib/sysusers.d/salmon.conf"
+	salmonUnitPath       = "/etc/systemd/system/salmon.service"
 )
 
 // initializeSalmonConfig creates the configuration when absent and reports the
@@ -68,9 +70,9 @@ func requireSalmonServiceAccountWith(
 	return nil
 }
 
-// installSalmonService creates the systemd unit when absent, enables it, and
-// reports the result to output.
-func installSalmonService(output io.Writer, configFilename string) error {
+// installSalmonService installs or explicitly reinstalls the executable and
+// systemd unit, enables the service, and reports each result.
+func installSalmonService(output io.Writer, configFilename string, reinstall bool) error {
 	if err := requireSalmonServiceAccount(); err != nil {
 		return err
 	}
@@ -85,6 +87,10 @@ func installSalmonService(output io.Writer, configFilename string) error {
 	if err != nil {
 		return err
 	}
+	executable, executablePreserved, err := installSalmonExecutable(output, executable, reinstall)
+	if err != nil {
+		return err
+	}
 	unit, err := setup.RenderSystemdUnitTemplate("salmon.service.tpl", string(mustSetupAsset("assets/setup/salmon.service.tpl")), struct {
 		Executable     string
 		ConfigFilename string
@@ -92,16 +98,84 @@ func installSalmonService(output io.Writer, configFilename string) error {
 	if err != nil {
 		return err
 	}
-	created, err := setup.InstallSystemdService(salmonUnitPath, "salmon.service", unit, runCommand)
+	installService := setup.InstallSystemdService
+	if reinstall {
+		installService = setup.ReinstallSystemdService
+	}
+	created, err := installService(salmonUnitPath, "salmon.service", unit, runCommand)
 	if err != nil {
 		return err
 	}
-	return setup.ReportEnsureResult(output, "systemd service", salmonUnitPath, created)
+	if !created && reinstall {
+		_, err := fmt.Fprintf(output, "Updated systemd service at %s\n", salmonUnitPath)
+		return err
+	}
+	if err := setup.ReportEnsureResult(output, "systemd service", salmonUnitPath, created); err != nil {
+		return err
+	}
+	if executablePreserved || !created {
+		return printSalmonReinstallHint(output)
+	}
+	return nil
 }
 
-// printSalmonStartHint explains how to start the configured service now.
-func printSalmonStartHint(output io.Writer) error {
-	_, err := fmt.Fprint(output, "\nService is configured and installed. To start it, run:\n\n    sudo systemctl start salmon.service\n")
+// installSalmonExecutable copies an executable launched from a user or other
+// non-system directory to a stable, system-wide location for the service.
+func installSalmonExecutable(output io.Writer, source string, reinstall bool) (string, bool, error) {
+	return installSalmonExecutableAt(output, source, salmonExecutablePath, reinstall)
+}
+
+func installSalmonExecutableAt(output io.Writer, source, destination string, reinstall bool) (string, bool, error) {
+	if isSystemExecutablePath(source) {
+		return source, false, nil
+	}
+	installed, err := setup.InstallExecutable(source, destination, reinstall)
+	if err != nil {
+		return "", false, err
+	}
+	if installed {
+		action := "Installed"
+		if reinstall {
+			action = "Reinstalled"
+		}
+		if _, err := fmt.Fprintf(output, "%s executable at %s\n", action, destination); err != nil {
+			return "", false, err
+		}
+	} else {
+		if err := setup.ReportEnsureResult(output, "executable", destination, false); err != nil {
+			return "", false, err
+		}
+	}
+	return destination, !installed, nil
+}
+
+func printSalmonReinstallHint(output io.Writer) error {
+	_, err := fmt.Fprintln(output, "\nRun this setup command again with --reinstall to replace installed files. The configuration will not be overwritten.")
+	return err
+}
+
+func isSystemExecutablePath(path string) bool {
+	path = filepath.Clean(path)
+	for _, directory := range []string{"/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin"} {
+		if filepath.Dir(path) == directory {
+			return true
+		}
+	}
+	for _, directory := range []string{"/nix/store", "/opt", "/snap"} {
+		if path == directory || strings.HasPrefix(path, directory+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// printSalmonStartHint explains how to activate the configured service now.
+func printSalmonStartHint(output io.Writer, reinstalled bool) error {
+	action := "start"
+	if reinstalled {
+		action = "restart"
+	}
+	_, err := fmt.Fprintf(output, "\nService is configured and installed. To %s it, run:\n\n    sudo systemctl %s salmon.service\n", action, action)
 	return err
 }
 

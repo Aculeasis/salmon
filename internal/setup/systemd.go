@@ -30,6 +30,16 @@ func systemdUnitArgument(argument string) string {
 // systemd and enables it. The caller supplies CmdRunner so this behavior is
 // testable without a real manager.
 func InstallSystemdService(unitPath, unitName, contents string, run CmdRunner) (bool, error) {
+	return installSystemdService(unitPath, unitName, contents, false, run)
+}
+
+// ReinstallSystemdService creates or replaces a generated systemd unit, then
+// reloads systemd and enables it.
+func ReinstallSystemdService(unitPath, unitName, contents string, run CmdRunner) (bool, error) {
+	return installSystemdService(unitPath, unitName, contents, true, run)
+}
+
+func installSystemdService(unitPath, unitName, contents string, reinstall bool, run CmdRunner) (bool, error) {
 	unitDirectory := filepath.Dir(unitPath)
 	info, err := os.Stat(unitDirectory)
 	if err != nil {
@@ -39,7 +49,12 @@ func InstallSystemdService(unitPath, unitName, contents string, run CmdRunner) (
 		return false, fmt.Errorf("systemd unit directory %s is not a directory", unitDirectory)
 	}
 
-	created, err := EnsureFile(unitPath, contents)
+	var created bool
+	if reinstall {
+		created, err = ReplaceFile(unitPath, contents, 0644)
+	} else {
+		created, err = EnsureFile(unitPath, contents)
+	}
 	if err != nil {
 		return false, err
 	}

@@ -81,6 +81,9 @@ func TestSetupOperationsDoNotPolluteTopLevelCommands(t *testing.T) {
 	if !strings.Contains(commands[0].Long, "Perform the complete setup") {
 		t.Fatalf("setup long help = %q, want complete-setup description", commands[0].Long)
 	}
+	if flag := commands[0].PersistentFlags().Lookup("reinstall"); flag == nil || flag.DefValue != "false" {
+		t.Fatalf("setup --reinstall flag = %#v, want default false", flag)
+	}
 
 	setupCommands := map[string]bool{}
 	for _, subcommand := range commands[0].Commands() {
@@ -90,6 +93,51 @@ func TestSetupOperationsDoNotPolluteTopLevelCommands(t *testing.T) {
 		if !setupCommands[want] {
 			t.Errorf("setup subcommands = %v, missing %q", setupCommands, want)
 		}
+	}
+	for _, subcommand := range commands[0].Commands() {
+		if subcommand.Name() == "install-service" && !strings.Contains(subcommand.Short, "Install the executable and systemd service") {
+			t.Errorf("install-service description = %q, want executable and service installation", subcommand.Short)
+		}
+	}
+}
+
+func TestSalmonSetupRootErrorProvidesSudoGuidance(t *testing.T) {
+	if err := salmonSetupRootError(0, "bin/salmon setup"); err != nil {
+		t.Fatalf("root setup error = %v, want nil", err)
+	}
+	err := salmonSetupRootError(1000, "bin/salmon setup --reinstall")
+	if err == nil {
+		t.Fatal("non-root setup was accepted")
+	}
+	for _, want := range []string{
+		"requires root privileges",
+		"Hint: Rerun it with sudo:",
+		"sudo bin/salmon setup --reinstall",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("non-root setup error = %q, want %q", err, want)
+		}
+	}
+}
+
+func TestSalmonStartHintRestartsAfterReinstall(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		reinstalled bool
+		want        string
+	}{
+		{name: "initial setup", want: "sudo systemctl start salmon.service"},
+		{name: "reinstall", reinstalled: true, want: "sudo systemctl restart salmon.service"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			output := &bytes.Buffer{}
+			if err := printSalmonStartHint(output, test.reinstalled); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), test.want) {
+				t.Fatalf("start hint = %q, want %q", output.String(), test.want)
+			}
+		})
 	}
 }
 
@@ -123,6 +171,68 @@ func TestCreateSalmonUserInstallsSysusersConfigurationAndCreatesAccount(t *testi
 	}
 	if !strings.Contains(output.String(), "Created systemd sysusers configuration") {
 		t.Fatalf("unexpected command output: %q", output.String())
+	}
+}
+
+func TestInstallSalmonExecutableCopiesFromNonSystemDirectory(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "Downloads", "salmon")
+	destination := filepath.Join(directory, "usr", "local", "bin", "salmon")
+	if err := os.MkdirAll(filepath.Dir(source), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("salmon binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	output := &bytes.Buffer{}
+
+	executable, preserved, err := installSalmonExecutableAt(output, source, destination, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executable != destination {
+		t.Fatalf("service executable = %q, want %q", executable, destination)
+	}
+	if preserved {
+		t.Fatal("new executable was reported as preserved")
+	}
+	if !strings.Contains(output.String(), "Installed executable at "+destination) {
+		t.Fatalf("output = %q, want installation report", output.String())
+	}
+	data, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), "salmon binary"; got != want {
+		t.Fatalf("installed executable = %q, want %q", got, want)
+	}
+}
+
+func TestInstallSalmonExecutableUsesSystemLocationInPlace(t *testing.T) {
+	for _, source := range []string{
+		"/bin/salmon",
+		"/usr/bin/salmon",
+		"/usr/local/bin/salmon",
+		"/opt/salmon/bin/salmon",
+		"/nix/store/hash-salmon/bin/salmon",
+		"/snap/salmon/current/bin/salmon",
+	} {
+		t.Run(source, func(t *testing.T) {
+			output := &bytes.Buffer{}
+			executable, preserved, err := installSalmonExecutableAt(output, source, filepath.Join(t.TempDir(), "salmon"), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if executable != source {
+				t.Fatalf("service executable = %q, want %q", executable, source)
+			}
+			if preserved {
+				t.Fatal("system executable was reported as preserved installation")
+			}
+			if output.Len() != 0 {
+				t.Fatalf("output = %q, want none", output.String())
+			}
+		})
 	}
 }
 

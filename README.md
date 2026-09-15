@@ -121,13 +121,15 @@ and unpack them. You'll get two binaries: `salmon` and `salmon-watch`.
 Then:
 
 ```bash
-# Install both binaries system-wide:
-sudo install -m 755 salmon /usr/local/bin/salmon
+# Set up the monitoring service. This also installs salmon binary under
+# `/usr/local/bin` when not already there.
+sudo ./salmon setup
+
+# Install the desktop application system-wide:
 sudo install -m 755 salmon-watch /usr/local/bin/salmon-watch
 
-# Let it create default configs, systemd service, desktop autostart entry,
-# and application launcher.
-sudo salmon setup
+# Let the desktop application create its default config, autostart entry,
+# and application launcher:
 salmon-watch setup
 
 # Start both:

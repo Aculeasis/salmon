@@ -45,3 +45,45 @@ func EnsureFile(path, contents string) (bool, error) {
 	}
 	return true, nil
 }
+
+// ReplaceFile atomically writes an application-managed file, replacing any
+// existing contents. The returned value reports whether the file was new.
+func ReplaceFile(path, contents string, mode os.FileMode) (bool, error) {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0755); err != nil {
+		return false, fmt.Errorf("create parent directory: %w", err)
+	}
+	_, statErr := os.Stat(path)
+	created := os.IsNotExist(statErr)
+	if statErr != nil && !created {
+		return false, fmt.Errorf("inspect file: %w", statErr)
+	}
+
+	file, err := ioutil.TempFile(directory, "."+filepath.Base(path)+".tmp-")
+	if err != nil {
+		return false, fmt.Errorf("create temporary file: %w", err)
+	}
+	temporaryPath := file.Name()
+	closeAttempted := false
+	defer func() {
+		if !closeAttempted {
+			file.Close()
+		}
+		os.Remove(temporaryPath)
+	}()
+
+	if err := file.Chmod(mode); err != nil {
+		return false, fmt.Errorf("set file permissions: %w", err)
+	}
+	if _, err := file.WriteString(contents); err != nil {
+		return false, fmt.Errorf("write file: %w", err)
+	}
+	closeAttempted = true
+	if err := file.Close(); err != nil {
+		return false, fmt.Errorf("close file: %w", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return false, fmt.Errorf("replace file: %w", err)
+	}
+	return created, nil
+}

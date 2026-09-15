@@ -108,3 +108,28 @@ func TestInstallSystemdServiceDoesNotOverwriteExistingUnit(t *testing.T) {
 		t.Fatalf("unit contents = %q, want preserved contents %q", got, want)
 	}
 }
+
+func TestReinstallSystemdServiceUpdatesExistingUnit(t *testing.T) {
+	unitPath := filepath.Join(t.TempDir(), "systemd", "salmon.service")
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ioutil.WriteFile(unitPath, []byte("old unit\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := ReinstallSystemdService(unitPath, "salmon.service", "generated unit\n", func(string, ...string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created {
+		t.Fatal("ReinstallSystemdService() reported an existing unit as new")
+	}
+	data, err := ioutil.ReadFile(unitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), "generated unit\n"; got != want {
+		t.Fatalf("unit contents = %q, want updated contents %q", got, want)
+	}
+}

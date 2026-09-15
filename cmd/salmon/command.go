@@ -11,6 +11,7 @@ import (
 func newRootCommand() *cobra.Command {
 	var configFilename string
 	var logLevel string
+	var reinstall bool
 	root := &cobra.Command{
 		Use:          "salmon",
 		Short:        "Monitor system health and publish its status",
@@ -32,7 +33,7 @@ func newRootCommand() *cobra.Command {
 	setupCommand := &cobra.Command{
 		Use:   "setup",
 		Short: "Perform the complete setup",
-		Long:  "Perform the complete setup by creating the default configuration and service account, then installing the systemd service. Run a setup subcommand to perform only one of these operations.",
+		Long:  "Perform the complete setup by installing the executable when needed, creating the default configuration and service account, then installing the systemd service. Run a setup subcommand to perform only one of these operations.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := initializeSalmonConfig(cmd.OutOrStdout(), configFilename); err != nil {
@@ -41,12 +42,13 @@ func newRootCommand() *cobra.Command {
 			if err := createSalmonUser(cmd.OutOrStdout()); err != nil {
 				return err
 			}
-			if err := installSalmonService(cmd.OutOrStdout(), configFilename); err != nil {
+			if err := installSalmonService(cmd.OutOrStdout(), configFilename, reinstall); err != nil {
 				return err
 			}
-			return printSalmonStartHint(cmd.OutOrStdout())
+			return printSalmonStartHint(cmd.OutOrStdout(), reinstall)
 		},
 	}
+	setupCommand.PersistentFlags().BoolVar(&reinstall, "reinstall", false, "Replace the installed executable and systemd service")
 	setupCommand.AddCommand(
 		&cobra.Command{
 			Use:   "create-config",
@@ -66,10 +68,10 @@ func newRootCommand() *cobra.Command {
 		},
 		&cobra.Command{
 			Use:   "install-service",
-			Short: "Install and enable the systemd service",
+			Short: "Install the executable and systemd service, then enable it",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				return installSalmonService(cmd.OutOrStdout(), configFilename)
+				return installSalmonService(cmd.OutOrStdout(), configFilename, reinstall)
 			},
 		},
 	)
