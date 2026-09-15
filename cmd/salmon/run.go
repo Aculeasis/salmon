@@ -46,7 +46,7 @@ func runSalmon(configFilename string, minLogLevel logs.LogLevel) error {
 func salmonConfigReadError(configFilename string, err error) error {
 	if configNotFound(err) && configFilename == defaultSalmonConfig {
 		executable := setup.ShellArgument(os.Args[0])
-		return fmt.Errorf("failed to read config from %s: %w\n\nHint: Run the following command to create the default configuration and install the service:\n\n    sudo %s setup\n\nTo create only the default configuration without installing the service, run:\n\n    sudo %s setup create-config\n", configFilename, err, executable, executable)
+		return fmt.Errorf("failed to read config from %s: %w\n\nHint: Run the following command to create the default configuration, install the service, and start it:\n\n    sudo %s setup\n\nTo create only the default configuration without installing the service, run:\n\n    sudo %s setup create-config\n", configFilename, err, executable, executable)
 	}
 	return fmt.Errorf("failed to read config from %s: %w", configFilename, err)
 }

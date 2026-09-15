@@ -39,12 +39,17 @@ jobs:
       - name: Set up and start Salmon
         run: |
           sudo ./bin/salmon setup
+
           test -x /usr/local/bin/salmon
           cmp ./bin/salmon /usr/local/bin/salmon
           grep -Fq 'ExecStart="/usr/local/bin/salmon"' /etc/systemd/system/salmon.service
+          sudo systemctl is-enabled --quiet salmon.service
+          sudo systemctl is-active --quiet salmon.service
 
+      - name: Configure Salmon for the E2E incident
+        run: |
           sudo patch --batch --forward /etc/salmon.yml .github/e2e/salmon.yml.patch
-          sudo systemctl start salmon.service
+          sudo systemctl restart salmon.service
 
       - name: Prepare isolated Salmon Watch Legacy home
         run: mkdir -p "${RUNNER_TEMP}/salmon-watch-home"
@@ -126,12 +131,17 @@ jobs:
       - name: Set up and start Salmon
         run: |
           sudo ./bin/salmon setup
+
           test -x /usr/local/bin/salmon
           cmp ./bin/salmon /usr/local/bin/salmon
           grep -Fq 'ExecStart="/usr/local/bin/salmon"' /etc/systemd/system/salmon.service
+          sudo systemctl is-enabled --quiet salmon.service
+          sudo systemctl is-active --quiet salmon.service
 
+      - name: Configure Salmon for the E2E incident
+        run: |
           sudo patch --batch --forward /etc/salmon.yml .github/e2e/salmon.yml.patch
-          sudo systemctl start salmon.service
+          sudo systemctl restart salmon.service
 
       - name: Prepare isolated Salmon Watch home
         run: mkdir -p "${RUNNER_TEMP}/salmon-watch-home"

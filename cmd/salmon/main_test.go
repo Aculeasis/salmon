@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io/ioutil"
 	"os"
 	"os/user"
@@ -120,24 +121,35 @@ func TestSalmonSetupRootErrorProvidesSudoGuidance(t *testing.T) {
 	}
 }
 
-func TestSalmonStartHintRestartsAfterReinstall(t *testing.T) {
-	for _, test := range []struct {
-		name        string
-		reinstalled bool
-		want        string
-	}{
-		{name: "initial setup", want: "sudo systemctl start salmon.service"},
-		{name: "reinstall", reinstalled: true, want: "sudo systemctl restart salmon.service"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			output := &bytes.Buffer{}
-			if err := printSalmonStartHint(output, test.reinstalled); err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(output.String(), test.want) {
-				t.Fatalf("start hint = %q, want %q", output.String(), test.want)
-			}
-		})
+func TestRestartSalmonServiceStartsServiceAndReportsSuccess(t *testing.T) {
+	output := &bytes.Buffer{}
+	var call []string
+	run := func(name string, args ...string) error {
+		call = append([]string{name}, args...)
+		return nil
+	}
+	if err := restartSalmonServiceWith(output, run); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(call, " "), "systemctl restart salmon.service"; got != want {
+		t.Fatalf("command = %q, want %q", got, want)
+	}
+	if !strings.Contains(output.String(), "configured, installed, and running") {
+		t.Fatalf("output = %q, want running-service confirmation", output.String())
+	}
+}
+
+func TestRestartSalmonServiceFailureSuggestsDiagnostics(t *testing.T) {
+	err := restartSalmonServiceWith(&bytes.Buffer{}, func(string, ...string) error {
+		return errors.New("service failed")
+	})
+	if err == nil {
+		t.Fatal("restart failure was ignored")
+	}
+	for _, want := range []string{"service failed", "systemctl status salmon.service", "journalctl --no-pager -u salmon.service -n 50"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("restart error = %q, want %q", err, want)
+		}
 	}
 }
 
@@ -338,7 +350,7 @@ func TestRunSalmonSuggestsSetupWhenConfigIsMissing(t *testing.T) {
 func TestSalmonConfigReadErrorSuggestsSetupForDefaultConfig(t *testing.T) {
 	err := salmonConfigReadError(defaultSalmonConfig, os.ErrNotExist)
 	for _, want := range []string{
-		"Hint: Run the following command to create the default configuration and install the service:\n\n    sudo " + os.Args[0] + " setup",
+		"Hint: Run the following command to create the default configuration, install the service, and start it:\n\n    sudo " + os.Args[0] + " setup",
 		"To create only the default configuration without installing the service, run:\n\n    sudo " + os.Args[0] + " setup create-config",
 	} {
 		if !strings.Contains(err.Error(), want) {

@@ -38,7 +38,7 @@ func newRootCommand() *cobra.Command {
 	setupCommand := &cobra.Command{
 		Use:   "setup",
 		Short: "Perform the complete setup",
-		Long:  "Perform the complete setup by installing the executable when needed, creating the default configuration and service account, then installing the systemd service. Run a setup subcommand to perform only one of these operations.",
+		Long:  "Perform the complete setup by installing the executable when needed, creating the default configuration and service account, then installing and starting the systemd service. Run a setup subcommand to perform only one of these operations.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := requireRootForSalmonSetup(cmd, "", configFilename, reinstall); err != nil {
@@ -53,7 +53,7 @@ func newRootCommand() *cobra.Command {
 			if err := installSalmonService(cmd.OutOrStdout(), configFilename, reinstall); err != nil {
 				return err
 			}
-			return printSalmonStartHint(cmd.OutOrStdout(), reinstall)
+			return restartSalmonService(cmd.OutOrStdout())
 		},
 	}
 	setupCommand.PersistentFlags().BoolVar(&reinstall, "reinstall", false, "Replace the installed executable and systemd service")

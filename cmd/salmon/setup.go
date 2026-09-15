@@ -169,13 +169,17 @@ func isSystemExecutablePath(path string) bool {
 	return false
 }
 
-// printSalmonStartHint explains how to activate the configured service now.
-func printSalmonStartHint(output io.Writer, reinstalled bool) error {
-	action := "start"
-	if reinstalled {
-		action = "restart"
+// restartSalmonService starts the installed service or restarts it to pick up
+// an explicitly reinstalled executable or unit.
+func restartSalmonService(output io.Writer) error {
+	return restartSalmonServiceWith(output, runCommand)
+}
+
+func restartSalmonServiceWith(output io.Writer, run setup.CmdRunner) error {
+	if err := run("systemctl", "restart", "salmon.service"); err != nil {
+		return fmt.Errorf("start Salmon service: %w\n\nView its status and recent logs with:\n\n    sudo systemctl status salmon.service\n    sudo journalctl --no-pager -u salmon.service -n 50", err)
 	}
-	_, err := fmt.Fprintf(output, "\nService is configured and installed. To %s it, run:\n\n    sudo systemctl %s salmon.service\n", action, action)
+	_, err := fmt.Fprintln(output, "\nSalmon is configured, installed, and running.")
 	return err
 }
 
