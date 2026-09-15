@@ -23,6 +23,16 @@ fn missing_default_config_suggests_complete_setup() {
         stderr.contains(&format!("    {executable} setup")),
         "{stderr}"
     );
+    assert!(
+        stderr.contains(
+            "To create only the default configuration without installing the desktop integration, run:"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("    {executable} setup create-config")),
+        "{stderr}"
+    );
 }
 
 #[test]

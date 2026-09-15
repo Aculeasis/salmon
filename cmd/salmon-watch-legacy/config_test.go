@@ -25,8 +25,14 @@ func TestWatchConfigReadErrorOnlySuggestsSetupForDefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := watchConfigReadError(defaultConfigFilename, os.ErrNotExist); !strings.Contains(got.Error(), "setup") {
-		t.Fatalf("default config error = %q, missing setup guidance", got)
+	got := watchConfigReadError(defaultConfigFilename, os.ErrNotExist)
+	for _, want := range []string{
+		"Hint: Run the following command to create the default configuration, desktop-autostart entry, and application launcher:\n\n    " + os.Args[0] + " setup",
+		"To create only the default configuration without installing the desktop integration, run:\n\n    " + os.Args[0] + " setup create-config",
+	} {
+		if !strings.Contains(got.Error(), want) {
+			t.Fatalf("default config error = %q, missing guidance %q", got, want)
+		}
 	}
 }
 

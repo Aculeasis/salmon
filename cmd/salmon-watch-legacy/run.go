@@ -158,7 +158,8 @@ func restartConfigIsValid(configPath string, notify notificator, logger *logs.Lo
 func watchConfigReadError(configFilename string, err error) error {
 	defaultConfigFilename, defaultConfigErr := defaultWatchConfigPath()
 	if configNotFound(err) && defaultConfigErr == nil && configFilename == defaultConfigFilename {
-		return fmt.Errorf("failed to read config from %s: %w\n\nHint: Run the following command to create the default configuration, desktop-autostart entry, and application launcher:\n\n    %s setup\n", configFilename, err, setup.ShellArgument(os.Args[0]))
+		executable := setup.ShellArgument(os.Args[0])
+		return fmt.Errorf("failed to read config from %s: %w\n\nHint: Run the following command to create the default configuration, desktop-autostart entry, and application launcher:\n\n    %s setup\n\nTo create only the default configuration without installing the desktop integration, run:\n\n    %s setup create-config\n", configFilename, err, executable, executable)
 	}
 	return fmt.Errorf("failed to read config from %s: %w", configFilename, err)
 }

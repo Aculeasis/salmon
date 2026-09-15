@@ -186,7 +186,7 @@ fn load_startup_config(path: &Path) -> Result<Config> {
             .unwrap_or_else(|| OsString::from("salmon-watch"));
         let executable = crate::setup::shell_argument(&executable.to_string_lossy());
         anyhow!(
-            "{error:#}\n\nHint: Run the following command to create the default configuration, desktop-autostart entry, and application launcher:\n\n    {executable} setup"
+            "{error:#}\n\nHint: Run the following command to create the default configuration, desktop-autostart entry, and application launcher:\n\n    {executable} setup\n\nTo create only the default configuration without installing the desktop integration, run:\n\n    {executable} setup create-config"
         )
     })
 }

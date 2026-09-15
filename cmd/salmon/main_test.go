@@ -227,9 +227,13 @@ func TestRunSalmonSuggestsSetupWhenConfigIsMissing(t *testing.T) {
 
 func TestSalmonConfigReadErrorSuggestsSetupForDefaultConfig(t *testing.T) {
 	err := salmonConfigReadError(defaultSalmonConfig, os.ErrNotExist)
-	want := "Hint: Run the following command to create the default configuration and install the service:\n\n    sudo " + os.Args[0] + " setup"
-	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("salmonConfigReadError() = %v, want setup guidance", err)
+	for _, want := range []string{
+		"Hint: Run the following command to create the default configuration and install the service:\n\n    sudo " + os.Args[0] + " setup",
+		"To create only the default configuration without installing the service, run:\n\n    sudo " + os.Args[0] + " setup create-config",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("salmonConfigReadError() = %v, want guidance %q", err, want)
+		}
 	}
 }
 
