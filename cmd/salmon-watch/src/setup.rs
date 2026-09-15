@@ -337,7 +337,7 @@ fn desktop_exec_argument(argument: &str) -> String {
 }
 
 /// Quotes a display-only command so it can be pasted into a POSIX shell.
-fn shell_argument(argument: &str) -> String {
+pub(crate) fn shell_argument(argument: &str) -> String {
     if !argument.is_empty()
         && argument
             .bytes()

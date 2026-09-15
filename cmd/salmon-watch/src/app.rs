@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use crate::runtime::{Command, RuntimeHandle};
 use crate::tray::{FlashCycle, TrayFlashController, TrayIcons};
 use crate::ui::{MainWindow, SalmonTray, apply_snapshot};
 use crate::window_geometry::WindowGeometryManager;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use slint::winit_030::WinitWindowAccessor;
 use slint::{CloseRequestResponse, ComponentHandle, Timer};
 
@@ -83,7 +83,7 @@ pub fn execute() -> Result<()> {
 /// thread. On exit, visible geometry is saved before networking is synchronously
 /// stopped, so a normal return means tunnels and child processes are gone.
 fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Result<RunOutcome> {
-    let config = Config::load(&config_path)?;
+    let config = load_startup_config(&config_path)?;
     log::info!(
         "starting with config {} ({} servers, window {})",
         config_path.display(),
@@ -166,6 +166,28 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
         RunOutcome::Restart
     } else {
         RunOutcome::Exit
+    })
+}
+
+/// Loads the startup configuration, suggesting complete setup when the default file is absent.
+fn load_startup_config(path: &Path) -> Result<Config> {
+    Config::load(path).map_err(|error| {
+        let missing = error.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        });
+        if !missing || config::default_path().ok().as_deref() != Some(path) {
+            return error;
+        }
+
+        let executable = std::env::args_os()
+            .next()
+            .unwrap_or_else(|| OsString::from("salmon-watch"));
+        let executable = crate::setup::shell_argument(&executable.to_string_lossy());
+        anyhow!(
+            "{error:#}\n\nHint: Run the following command to create the default configuration, desktop-autostart entry, and application launcher:\n\n    {executable} setup"
+        )
     })
 }
 
