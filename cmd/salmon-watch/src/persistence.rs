@@ -138,6 +138,8 @@ pub struct Preferences {
     /// Last known normal placement plus the display state to restore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_geometry: Option<WindowGeometry>,
+    #[serde(default)]
+    pub launch_minimized: bool,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -148,6 +150,7 @@ impl Default for Preferences {
             theme: Theme::Dark,
             sections: SectionPreferences::default(),
             window_geometry: None,
+            launch_minimized: false,
             extra: BTreeMap::new(),
         }
     }
@@ -383,6 +386,7 @@ mod tests {
         assert!(state.preferences.sections.active_incidents_expanded);
         assert!(!state.preferences.sections.snoozed_incidents_expanded);
         assert_eq!(state.preferences.window_geometry, None);
+        assert!(!state.preferences.launch_minimized);
     }
 
     #[test]

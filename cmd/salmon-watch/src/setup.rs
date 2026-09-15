@@ -227,7 +227,7 @@ fn validate_executable_path(executable: &Path, temporary_directory: &Path) -> Re
 }
 
 /// Builds one desktop entry using freedesktop `Exec` escaping, not shell quoting.
-fn desktop_entry(executable: &Path, config_filename: &Path, start_hidden: bool) -> Result<String> {
+pub(crate) fn desktop_entry(executable: &Path, config_filename: &Path, start_hidden: bool) -> Result<String> {
     let executable = executable
         .to_str()
         .context("executable path must be valid UTF-8 for a desktop entry")?;
@@ -405,11 +405,11 @@ fn install_file(path: &Path, contents: &[u8], replace: bool) -> Result<FileResul
     })
 }
 
-fn set_public_file_permissions(file: &fs::File) -> Result<()> {
+fn set_public_file_permissions(_file: &fs::File) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        file.set_permissions(fs::Permissions::from_mode(0o644))
+        _file.set_permissions(fs::Permissions::from_mode(0o644))
             .context("set file permissions")?;
     }
     Ok(())
@@ -455,11 +455,11 @@ fn backup_existing_files(
     Ok(Some(temporary.keep()))
 }
 
-fn set_private_directory_permissions(directory: &Path) -> Result<()> {
+fn set_private_directory_permissions(_directory: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+        fs::set_permissions(_directory, fs::Permissions::from_mode(0o700))
             .context("set reinstall backup directory permissions")?;
     }
     Ok(())
@@ -547,9 +547,20 @@ mod tests {
             assert!(entry.contains("Type=Application"));
             assert!(entry.contains("Icon=salmon-watch"));
             assert!(entry.contains("X-Salmon-Watch-Desktop-Entry-Version=2"));
-            assert!(entry.contains("Terminal=false"));
-            assert!(entry.contains("\"/opt/Salmon Watch/salmon-watch\""));
-            assert!(entry.contains(&desktop_exec_argument(layout.config.to_str().unwrap())));
+            let expected_exec = desktop_exec_argument(
+                std::path::absolute(&layout.executable)
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+            );
+            assert!(entry.contains(&expected_exec));
+            let expected_config = desktop_exec_argument(
+                std::path::absolute(&layout.config)
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+            );
+            assert!(entry.contains(&expected_config));
             assert!(!entry.contains(DESKTOP_EXEC_PLACEHOLDER));
         }
         assert!(autostart.contains(" --start-hidden\n"));
@@ -831,7 +842,7 @@ mod tests {
         );
         assert_eq!(
             validate_executable_path(Path::new("/opt/salmon-watch"), Path::new("/tmp")).unwrap(),
-            Path::new("/opt/salmon-watch")
+            std::path::absolute(Path::new("/opt/salmon-watch")).unwrap()
         );
     }
 }

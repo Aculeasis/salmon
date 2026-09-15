@@ -14,7 +14,7 @@ use crate::notification::{DesktopNotificationSink, NotificationSink};
 use crate::persistence::{self, StateFile, Store, Theme};
 use crate::runtime::{Command, RuntimeHandle};
 use crate::tray::{FlashCycle, TrayFlashController, TrayIcons};
-use crate::ui::{MainWindow, SalmonTray, apply_snapshot};
+use crate::ui::{MainWindow, SalmonTray, SettingsWindow, apply_snapshot};
 use crate::window_geometry::WindowGeometryManager;
 use anyhow::{Context, Result, anyhow};
 use slint::winit_030::WinitWindowAccessor;
@@ -84,20 +84,22 @@ pub fn execute() -> Result<()> {
 /// stopped, so a normal return means tunnels and child processes are gone.
 fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Result<RunOutcome> {
     let config = load_startup_config(&config_path)?;
-    log::info!(
-        "starting with config {} ({} servers, window {})",
-        config_path.display(),
-        config.ws_client.servers.len(),
-        if start_hidden { "hidden" } else { "visible" }
-    );
     let state_path = persistence::default_state_path()?;
     log::debug!("loading persisted state from {}", state_path.display());
     let store = Store::new(state_path);
     let persisted = store.load()?;
     let snoozes = persisted.decoded_snoozes()?;
+    let should_start_hidden = start_hidden || persisted.preferences.launch_minimized;
+    log::info!(
+        "starting with config {} ({} servers, window {})",
+        config_path.display(),
+        config.ws_client.servers.len(),
+        if should_start_hidden { "hidden" } else { "visible" }
+    );
     let window = MainWindow::new().context("failed to create native window")?;
     install_scale_logging(&window, automatic_scale);
     let tray = SalmonTray::new().context("failed to create system tray icon")?;
+    let settings_window = SettingsWindow::new().context("failed to create settings window")?;
     log::info!("UI and system tray initialized");
     let geometry = WindowGeometryManager::new(store.clone(), persisted.preferences.window_geometry);
 
@@ -108,7 +110,16 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
         &tray,
         Rc::new(DesktopNotificationSink),
         geometry.clone(),
+        config_path.clone(),
+    );
+    install_settings_callbacks(
+        &window,
+        &tray,
+        &settings_window,
+        store.clone(),
+        geometry.clone(),
         config_path,
+        restart_requested.clone(),
     );
     install_termination_handler(&tray)?;
 
@@ -142,7 +153,7 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
     log::debug!("application runtime started");
     install_incident_actions(&window, runtime.commands());
 
-    if !start_hidden {
+    if !should_start_hidden {
         geometry.show(window.window())?;
     }
 
@@ -150,6 +161,7 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
     // the status window is closed.
     let event_loop_result = slint::run_event_loop().context("native event loop failed");
     log::info!("shutting down");
+    let _ = settings_window.hide();
     let geometry_result = if window.window().is_visible() {
         geometry.save(window.window())
     } else {
@@ -308,6 +320,230 @@ fn install_window_callbacks(window: &MainWindow, store: Store, geometry: WindowG
             }
         }
     });
+}
+
+fn install_settings_callbacks(
+    window: &MainWindow,
+    tray: &SalmonTray,
+    settings_window: &SettingsWindow,
+    store: Store,
+    geometry: WindowGeometryManager,
+    config_path: PathBuf,
+    restart_requested: Rc<Cell<bool>>,
+) {
+    let initial_theme = Rc::new(Cell::new(Theme::Dark));
+
+    let window_weak = window.as_weak();
+    let settings_weak = settings_window.as_weak();
+    let store_for_open = store.clone();
+    let config_path_for_open = config_path.clone();
+    let initial_theme_for_open = initial_theme.clone();
+
+    let open_settings = Rc::new(move || {
+        let (Some(w), Some(s)) = (window_weak.upgrade(), settings_weak.upgrade()) else {
+            return;
+        };
+        let (current_theme, launch_minimized) = match store_for_open.load() {
+            Ok(state) => (state.preferences.theme, state.preferences.launch_minimized),
+            Err(_) => (
+                if w.get_dark_theme() {
+                    Theme::Dark
+                } else {
+                    Theme::Light
+                },
+                false,
+            ),
+        };
+        initial_theme_for_open.set(current_theme);
+
+        let config_text = std::fs::read_to_string(&config_path_for_open).unwrap_or_else(|_| {
+            String::from_utf8_lossy(include_bytes!("../assets/setup/salmon-watch.yml")).into_owned()
+        });
+
+        let autostart_enabled =
+            crate::autostart::is_autostart_enabled(&config_path_for_open).unwrap_or(false);
+        let is_dark = current_theme == Theme::Dark;
+
+        s.set_theme_index(if is_dark { 0 } else { 1 });
+        s.set_dark_theme(is_dark);
+        s.set_autostart_enabled(autostart_enabled);
+        s.set_launch_minimized(launch_minimized);
+        s.set_config_text(config_text.into());
+        s.set_status_message("".into());
+        s.set_status_is_error(false);
+
+        center_window(s.window(), w.window());
+
+        if let Err(error) = s.show() {
+            log::error!("failed to show settings window: {error:#}");
+        }
+        activate_window(s.window());
+    });
+
+    let open_for_window = open_settings.clone();
+    window.on_open_settings(move || {
+        open_for_window();
+    });
+
+    let open_for_tray = open_settings.clone();
+    tray.on_open_settings(move || {
+        open_for_tray();
+    });
+
+    // Immediate theme preview on dropdown change: applies to both MainWindow and SettingsWindow
+    let window_weak = window.as_weak();
+    let settings_weak = settings_window.as_weak();
+    settings_window.on_theme_changed(move |idx| {
+        let is_dark = idx == 0;
+        if let Some(w) = window_weak.upgrade() {
+            w.set_dark_theme(is_dark);
+        }
+        if let Some(s) = settings_weak.upgrade() {
+            s.set_dark_theme(is_dark);
+        }
+    });
+
+    // Cancel clicked: revert theme to initial and hide
+    let window_weak = window.as_weak();
+    let settings_weak = settings_window.as_weak();
+    let initial_theme_for_cancel = initial_theme.clone();
+    settings_window.on_cancel_clicked(move || {
+        let orig_theme = initial_theme_for_cancel.get();
+        if let Some(w) = window_weak.upgrade() {
+            w.set_dark_theme(orig_theme == Theme::Dark);
+        }
+        if let Some(s) = settings_weak.upgrade() {
+            s.set_dark_theme(orig_theme == Theme::Dark);
+            let _ = s.hide();
+        }
+    });
+
+    // Window close button (X) clicked: treat as Cancel
+    let window_weak = window.as_weak();
+    let settings_weak = settings_window.as_weak();
+    let initial_theme_for_close = initial_theme.clone();
+    settings_window.window().on_close_requested(move || {
+        let orig_theme = initial_theme_for_close.get();
+        if let Some(w) = window_weak.upgrade() {
+            w.set_dark_theme(orig_theme == Theme::Dark);
+        }
+        if let Some(s) = settings_weak.upgrade() {
+            s.set_dark_theme(orig_theme == Theme::Dark);
+            let _ = s.hide();
+        }
+        CloseRequestResponse::KeepWindowShown
+    });
+
+    // Apply clicked: validate, save config, update autostart, update preferences, reload
+    let window_weak = window.as_weak();
+    let settings_weak = settings_window.as_weak();
+    let store_for_apply = store.clone();
+    let geometry_for_apply = geometry.clone();
+    let config_path_for_apply = config_path.clone();
+    let restart_requested_for_apply = restart_requested.clone();
+    let initial_theme_for_apply = initial_theme.clone();
+
+    settings_window.on_apply_clicked(move || {
+        let (Some(w), Some(s)) = (window_weak.upgrade(), settings_weak.upgrade()) else {
+            return;
+        };
+
+        let theme_idx = s.get_theme_index();
+        let new_theme = if theme_idx == 0 {
+            Theme::Dark
+        } else {
+            Theme::Light
+        };
+        let autostart_enabled = s.get_autostart_enabled();
+        let launch_minimized = s.get_launch_minimized();
+        let config_str = s.get_config_text().to_string();
+
+        // Validate YAML syntax and configuration invariants
+        let parsed_config: Config = match serde_yaml::from_str(&config_str) {
+            Ok(cfg) => cfg,
+            Err(err) => {
+                s.set_status_is_error(true);
+                s.set_status_message(format!("YAML syntax error: {err}").into());
+                return;
+            }
+        };
+
+        if let Err(err) = parsed_config.validate() {
+            s.set_status_is_error(true);
+            s.set_status_message(format!("Configuration error: {err}").into());
+            return;
+        }
+
+        // Save configuration file
+        if let Some(parent) = config_path_for_apply.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(err) = std::fs::write(&config_path_for_apply, config_str.as_bytes()) {
+            s.set_status_is_error(true);
+            s.set_status_message(format!("Failed to save config: {err:#}").into());
+            return;
+        }
+
+        // Update autostart
+        if let Err(err) =
+            crate::autostart::set_autostart(autostart_enabled, &config_path_for_apply)
+        {
+            log::error!("failed to update autostart: {err:#}");
+        }
+
+        // Save theme and launch_minimized to preferences
+        if let Err(err) = store_for_apply.update(|state| {
+            state.preferences.theme = new_theme;
+            state.preferences.launch_minimized = launch_minimized;
+            Ok(())
+        }) {
+            log::error!("failed to save preferences: {err:#}");
+        }
+        initial_theme_for_apply.set(new_theme);
+        w.set_dark_theme(new_theme == Theme::Dark);
+
+        // Hide settings window
+        let _ = s.hide();
+
+        // Reload configuration by restarting the watcher
+        restart_requested_for_apply.set(true);
+        if w.window().is_visible() {
+            if let Err(err) = geometry_for_apply.save(w.window()) {
+                log::error!("failed to save window geometry: {err:#}");
+            }
+        }
+        let _ = slint::quit_event_loop();
+    });
+}
+
+/// Centers the settings window on the monitor containing the main window, or the primary monitor.
+fn center_window(target: &slint::Window, parent: &slint::Window) {
+    let scale = target.scale_factor();
+    let width = (600.0 * scale).round() as i32;
+    let height = (520.0 * scale).round() as i32;
+
+    let monitor = parent
+        .with_winit_window(|w| w.current_monitor().or_else(|| w.primary_monitor()))
+        .flatten()
+        .or_else(|| {
+            target
+                .with_winit_window(|w| w.current_monitor().or_else(|| w.primary_monitor()))
+                .flatten()
+        });
+
+    if let Some(monitor) = monitor {
+        let mon_size = monitor.size();
+        let mon_pos = monitor.position();
+
+        let center_x = mon_pos.x + (mon_size.width as i32 - width) / 2;
+        let center_y = mon_pos.y + (mon_size.height as i32 - height) / 2;
+
+        let center_x = center_x.max(mon_pos.x);
+        let center_y = center_y.max(mon_pos.y);
+
+        target.set_size(slint::PhysicalSize::new(width as u32, height as u32));
+        target.set_position(slint::PhysicalPosition::new(center_x, center_y));
+    }
 }
 
 /// Connects tray activation, menu actions, notification diagnostics, and exit.

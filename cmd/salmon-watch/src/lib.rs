@@ -7,6 +7,8 @@
 
 /// Process startup, Slint wiring, tray callbacks, and ordered shutdown.
 pub mod app;
+/// Cross-platform autostart registration.
+pub mod autostart;
 /// Secure bearer credential generation and operator instructions.
 pub mod bearer_token;
 /// Compile-time version and build provenance.

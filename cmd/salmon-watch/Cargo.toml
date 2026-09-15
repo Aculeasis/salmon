@@ -29,6 +29,9 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake", "rustls-tls-native-roots"] }
 
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
 [build-dependencies]
 slint-build = "=1.17.1"
 

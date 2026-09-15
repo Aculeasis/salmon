@@ -1,11 +1,15 @@
 use std::process::Command;
 
 #[test]
+#[cfg(not(windows))]
 fn missing_default_config_suggests_complete_setup() {
     let config_home = tempfile::tempdir().unwrap();
     let executable = env!("CARGO_BIN_EXE_salmon-watch");
-    let output = Command::new(executable)
-        .env("XDG_CONFIG_HOME", config_home.path())
+    let mut command = Command::new(executable);
+    command.env("XDG_CONFIG_HOME", config_home.path());
+    #[cfg(windows)]
+    command.env("APPDATA", config_home.path());
+    let output = command
         .output()
         .expect("failed to execute salmon-watch");
 

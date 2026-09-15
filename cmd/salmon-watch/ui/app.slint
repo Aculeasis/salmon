@@ -1,4 +1,4 @@
-import { HorizontalBox, Palette, ScrollView, VerticalBox } from "std-widgets.slint";
+import { CheckBox, ComboBox, HorizontalBox, Palette, ScrollView, TextEdit, VerticalBox } from "std-widgets.slint";
 import "DepartureMono-Regular.otf";
 
 export struct ServerView {
@@ -320,6 +320,7 @@ export component MainWindow inherits Window {
     in property <[IncidentView]> snoozed-incidents;
     callback preferences-changed();
     callback incident-action(string, string, string);
+    callback open-settings();
 
     init => {
         Palette.color-scheme = root.dark-theme ? ColorScheme.dark : ColorScheme.light;
@@ -376,12 +377,11 @@ export component MainWindow inherits Window {
                     }
                 }
                 PixelButton {
-                    text: root.dark-theme ? "☀" : "☾";
-                    accessible-text: root.dark-theme ? "Switch to light scheme" : "Switch to dark scheme";
+                    text: "⚙";
+                    accessible-text: "Settings";
                     dark-theme: root.dark-theme;
                     clicked => {
-                        root.dark-theme = !root.dark-theme;
-                        root.preferences-changed();
+                        root.open-settings();
                     }
                 }
             }
@@ -509,6 +509,7 @@ export component SalmonTray inherits SystemTrayIcon {
     in property <string> status-title;
     callback toggle-window();
     callback open-window();
+    callback open-settings();
     callback example-notification();
     callback restart();
     callback exit();
@@ -521,6 +522,10 @@ export component SalmonTray inherits SystemTrayIcon {
         MenuItem {
             title: root.status-title;
             activated => { root.open-window(); }
+        }
+        MenuItem {
+            title: "Settings...";
+            activated => { root.open-settings(); }
         }
         MenuSeparator { }
         MenuItem {
@@ -535,6 +540,145 @@ export component SalmonTray inherits SystemTrayIcon {
         MenuItem {
             title: "Exit";
             activated => { root.exit(); }
+        }
+    }
+}
+
+export component SettingsWindow inherits Window {
+    title: "Salmon Watch - Settings";
+    icon: @image-url("../assets/app-icon.svg");
+    default-font-family: "Departure Mono";
+    default-font-size: 13px;
+    preferred-width: 600px;
+    preferred-height: 520px;
+    min-width: 380px;
+    min-height: 320px;
+    background: dark-theme ? #171717 : #ffffff;
+
+    in-out property <bool> dark-theme: true;
+    in-out property <int> theme-index: 0;
+    in-out property <bool> autostart-enabled: false;
+    in-out property <bool> launch-minimized: false;
+    in-out property <string> config-text: "";
+    in-out property <string> status-message: "";
+    in-out property <bool> status-is-error: false;
+
+    callback theme-changed(int);
+    callback apply-clicked();
+    callback cancel-clicked();
+
+    init => {
+        Palette.color-scheme = root.dark-theme ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed dark-theme => {
+        Palette.color-scheme = root.dark-theme ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed theme-index => {
+        root.dark-theme = (root.theme-index == 0);
+    }
+
+    property <brush> foreground-color: dark-theme ? #e8e8e8 : #000000;
+    property <brush> border-color-value: dark-theme ? #666666 : #777777;
+
+    VerticalBox {
+        padding: 16px;
+        spacing: 12px;
+
+        Text {
+            text: "Settings";
+            font-size: 20px;
+            font-weight: 700;
+            color: root.foreground-color;
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            Text {
+                text: "Theme:";
+                color: root.foreground-color;
+                vertical-alignment: center;
+                min-width: 80px;
+            }
+            ComboBox {
+                model: ["Dark", "Light"];
+                current-index <=> root.theme-index;
+                width: 130px;
+                selected(val) => {
+                    root.dark-theme = (root.theme-index == 0);
+                    root.theme-changed(root.theme-index);
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            Text {
+                text: "Autostart:";
+                color: root.foreground-color;
+                vertical-alignment: center;
+                min-width: 80px;
+            }
+            CheckBox {
+                text: "Start on system login";
+                checked <=> root.autostart-enabled;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            Text {
+                text: "Launch:";
+                color: root.foreground-color;
+                vertical-alignment: center;
+                min-width: 80px;
+            }
+            CheckBox {
+                text: "Launch minimized";
+                checked <=> root.launch-minimized;
+            }
+        }
+
+        VerticalLayout {
+            spacing: 6px;
+            vertical-stretch: 1;
+
+            Text {
+                text: "Configuration (salmon-watch.yml):";
+                color: root.foreground-color;
+                font-weight: 700;
+            }
+
+            editor := TextEdit {
+                text <=> root.config-text;
+                font-family: "Departure Mono";
+                font-size: 12px;
+                wrap: no-wrap;
+            }
+        }
+
+        if root.status-message != "": Text {
+            text: root.status-message;
+            color: root.status-is-error ? #ff7b72 : #7ad879;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: end;
+
+            PixelButton {
+                text: "Apply";
+                dark-theme: root.dark-theme;
+                clicked => { root.apply-clicked(); }
+            }
+            PixelButton {
+                text: "Cancel";
+                dark-theme: root.dark-theme;
+                clicked => { root.cancel-clicked(); }
+            }
         }
     }
 }
