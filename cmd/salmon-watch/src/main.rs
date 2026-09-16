@@ -5,6 +5,7 @@ unsafe extern "system" {
     fn AttachConsole(dw_process_id: u32) -> i32;
     fn GetStdHandle(n_std_handle: u32) -> *mut std::ffi::c_void;
     fn SetStdHandle(n_std_handle: u32, h_handle: *mut std::ffi::c_void) -> i32;
+    fn SetCurrentProcessExplicitAppUserModelID(app_id: *const u16) -> i32;
     fn CreateFileW(
         lp_file_name: *const u16,
         dw_desired_access: u32,
@@ -37,23 +38,29 @@ const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_
 
 fn main() {
     #[cfg(windows)]
-    unsafe {
-        if AttachConsole(ATTACH_PARENT_PROCESS) != 0 {
-            let out_handle = GetStdHandle(STD_OUTPUT_HANDLE);
-            if out_handle.is_null() || out_handle == INVALID_HANDLE_VALUE {
-                let conout: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
-                let handle = CreateFileW(
-                    conout.as_ptr(),
-                    GENERIC_READ | GENERIC_WRITE,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    std::ptr::null_mut(),
-                    OPEN_EXISTING,
-                    0,
-                    std::ptr::null_mut(),
-                );
-                if handle != INVALID_HANDLE_VALUE {
-                    SetStdHandle(STD_OUTPUT_HANDLE, handle);
-                    SetStdHandle(STD_ERROR_HANDLE, handle);
+    {
+        salmon_watch::notification::register_app_id();
+        unsafe {
+            let app_id: Vec<u16> = "Salmon Watch\0".encode_utf16().collect();
+            let _ = SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr());
+
+            if AttachConsole(ATTACH_PARENT_PROCESS) != 0 {
+                let out_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+                if out_handle.is_null() || out_handle == INVALID_HANDLE_VALUE {
+                    let conout: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+                    let handle = CreateFileW(
+                        conout.as_ptr(),
+                        GENERIC_READ | GENERIC_WRITE,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        std::ptr::null_mut(),
+                        OPEN_EXISTING,
+                        0,
+                        std::ptr::null_mut(),
+                    );
+                    if handle != INVALID_HANDLE_VALUE {
+                        SetStdHandle(STD_OUTPUT_HANDLE, handle);
+                        SetStdHandle(STD_ERROR_HANDLE, handle);
+                    }
                 }
             }
         }

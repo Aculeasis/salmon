@@ -58,6 +58,9 @@ pub struct NotificationDispatcher {
 impl NotificationDispatcher {
     /// Starts the production desktop-notification worker.
     pub fn start() -> Result<Self> {
+        #[cfg(windows)]
+        register_app_id();
+
         Self::start_with_sink(DesktopNotificationSink, NOTIFICATION_QUEUE_CAPACITY)
     }
 
@@ -174,7 +177,31 @@ fn desktop_notification(title: &str, body: &str) -> Notification {
         .appname("Salmon Watch")
         .summary(title)
         .body(body);
+    #[cfg(windows)]
+    notification.app_id("Salmon Watch");
     notification
+}
+
+/// Ensures the Windows AppUserModelID is registered for desktop toast notifications.
+#[cfg(windows)]
+pub fn register_app_id() {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    if let Ok((key, _)) = hkcu.create_subkey(r"Software\Classes\AppUserModelId\Salmon Watch") {
+        let _ = key.set_value("DisplayName", &"Salmon Watch");
+
+        let icon_path = dirs::data_local_dir().map(|dir| dir.join("SalmonWatch").join("icon.png"));
+        if let Some(ref path) = icon_path {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            const OK_ICON: &[u8] = include_bytes!("../assets/tray/green.png");
+            let _ = std::fs::write(path, OK_ICON);
+            let _ = key.set_value("IconUri", &path.to_string_lossy().as_ref());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -218,6 +245,21 @@ mod tests {
         assert_eq!(notification.appname, "Salmon Watch");
         assert_eq!(notification.summary, "Example title");
         assert_eq!(notification.body, "Example body");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn register_app_id_creates_registry_entry() {
+        register_app_id();
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu
+            .open_subkey(r"Software\Classes\AppUserModelId\Salmon Watch")
+            .expect("open AppUserModelId key");
+        let display_name: String = key.get_value("DisplayName").expect("get DisplayName");
+        assert_eq!(display_name, "Salmon Watch");
     }
 
     #[test]
