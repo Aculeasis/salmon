@@ -197,8 +197,8 @@ pub fn register_app_id() {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            const OK_ICON: &[u8] = include_bytes!("../assets/tray/green.png");
-            let _ = std::fs::write(path, OK_ICON);
+            const APP_ICON: &[u8] = include_bytes!("../assets/app-icon.png");
+            let _ = std::fs::write(path, APP_ICON);
             let _ = key.set_value("IconUri", &path.to_string_lossy().as_ref());
         }
     }

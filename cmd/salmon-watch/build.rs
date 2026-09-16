@@ -10,6 +10,13 @@ fn main() {
         env::var("TARGET").expect("Cargo did not provide TARGET")
     );
     slint_build::compile("ui/app.slint").expect("failed to compile Slint UI");
+
+    #[cfg(windows)]
+    {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("assets/app-icon.ico");
+        res.compile().expect("failed to compile Windows resource");
+    }
 }
 
 /// Exports caller-supplied release metadata with a useful direct-Cargo fallback.
