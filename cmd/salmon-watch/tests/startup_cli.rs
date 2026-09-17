@@ -9,9 +9,7 @@ fn missing_default_config_suggests_complete_setup() {
     command.env("XDG_CONFIG_HOME", config_home.path());
     #[cfg(windows)]
     command.env("APPDATA", config_home.path());
-    let output = command
-        .output()
-        .expect("failed to execute salmon-watch");
+    let output = command.output().expect("failed to execute salmon-watch");
 
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());

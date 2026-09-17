@@ -433,6 +433,8 @@ async fn run_async(
         for line in event_logs.lines(&event) {
             log::log!(line.level, "{}", line.message);
         }
+        let recovered_notification_server =
+            connection_notification_recovery(&event, reducer.state());
         let transition = reducer.reduce(event);
         let mut changed = transition.changed;
         for effect in transition.effects {
@@ -514,6 +516,9 @@ async fn run_async(
                 }
             }
         }
+        if let Some(server_id) = recovered_notification_server {
+            notification_filter.reset_server(&server_id);
+        }
         if changed || refresh {
             (publish)(reducer.state().snapshot(wall_clock_now()));
         }
@@ -537,6 +542,23 @@ async fn run_async(
     if let Some(dispatcher) = notifications {
         dispatcher.shutdown();
     }
+}
+
+/// Detects a real internal-incident recovery before the reducer consumes it.
+///
+/// The reducer intentionally omits desktop effects for snoozed incidents. The
+/// notification filter still needs this lifecycle signal so its `Notified`
+/// state cannot leak into a later outage.
+fn connection_notification_recovery(event: &Event, state: &AppState) -> Option<String> {
+    let (server_id, incident_kind) = match event {
+        Event::Connected { server_id, .. } => (server_id, "connection"),
+        Event::TunnelReady { server_id, .. } => (server_id, "tunnel"),
+        _ => return None,
+    };
+    state
+        .internal_incidents
+        .contains_key(&format!("internal.{incident_kind}.{server_id}"))
+        .then(|| server_id.clone())
 }
 
 /// Converts a relative UI action at the last responsible moment.
@@ -680,6 +702,37 @@ full"#,
         let reconnected = logs.lines(&snapshot());
         assert_eq!(reconnected.len(), 2);
         assert!(reconnected[1].message.contains("ongoing incident disk"));
+    }
+
+    #[test]
+    fn snoozed_recovery_still_resets_connection_notification_state() {
+        let mut snoozes = BTreeMap::new();
+        snoozes.insert("internal.connection.home".into(), at(100));
+        let mut reducer = Reducer::new(AppState::new(vec!["home".into()], snoozes));
+        reducer.reduce(Event::Disconnected {
+            server_id: "home".into(),
+            at: at(1),
+            error: "offline".into(),
+        });
+
+        let recovered = Event::Connected {
+            server_id: "home".into(),
+            at: at(2),
+        };
+        assert_eq!(
+            connection_notification_recovery(&recovered, reducer.state()),
+            Some("home".into())
+        );
+        let transition = reducer.reduce(recovered.clone());
+        assert!(
+            transition.effects.is_empty(),
+            "snooze suppresses desktop OK"
+        );
+        assert_eq!(
+            connection_notification_recovery(&recovered, reducer.state()),
+            None,
+            "a repeated Connected event is not a new recovery"
+        );
     }
 
     #[test]

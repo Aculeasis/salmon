@@ -184,14 +184,8 @@ async fn run_with_spec(
                     .await
                     .is_err()
                 {
-                    stop_generation(
-                        &server.id,
-                        &mut child,
-                        &isolation,
-                        stdout_task,
-                        stderr_task,
-                    )
-                    .await;
+                    stop_generation(&server.id, &mut child, &isolation, stdout_task, stderr_task)
+                        .await;
                     return;
                 }
                 let (stop_tx, stop_rx) = watch::channel(false);
@@ -275,14 +269,7 @@ async fn run_with_spec(
                 }
             }
             BeforeReady::Shutdown => {
-                stop_generation(
-                    &server.id,
-                    &mut child,
-                    &isolation,
-                    stdout_task,
-                    stderr_task,
-                )
-                .await;
+                stop_generation(&server.id, &mut child, &isolation, stdout_task, stderr_task).await;
                 return;
             }
         }
@@ -506,7 +493,10 @@ impl TunnelJob {
 
     pub(crate) fn assign(&self, child: &Child) -> io::Result<()> {
         let raw_handle = child.raw_handle().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "child process handle is unavailable")
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "child process handle is unavailable",
+            )
         })?;
         let ret = unsafe { AssignProcessToJobObject(self.0, raw_handle) };
         if ret == 0 {
@@ -1272,7 +1262,7 @@ exit 7"#
         let job = TunnelJob::new().expect("failed to create job object");
         let mut command = tokio::process::Command::new("cmd.exe");
         command
-            .args(&["/c", "ping 127.0.0.1 -n 30 >nul"])
+            .args(["/c", "ping 127.0.0.1 -n 30 >nul"])
             .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         let mut child = command.spawn().expect("failed to spawn child");
         job.assign(&child).expect("failed to assign child to job");
@@ -1291,7 +1281,7 @@ exit 7"#
         let job = TunnelJob::new().expect("failed to create job object");
         let mut command = tokio::process::Command::new("ping");
         command
-            .args(&["127.0.0.1", "-n", "30"])
+            .args(["127.0.0.1", "-n", "30"])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -1311,7 +1301,10 @@ exit 7"#
             .expect("failed to wait for child");
         let elapsed = start.elapsed();
         // Ping -n 30 takes 30s. Being killed by job closure must happen in < 3s.
-        assert!(elapsed < Duration::from_secs(3), "child took too long to terminate: {elapsed:?}");
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "child took too long to terminate: {elapsed:?}"
+        );
         assert!(status.code().is_some());
     }
 }

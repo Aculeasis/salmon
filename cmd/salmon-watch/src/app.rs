@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::rc::Rc;
@@ -341,12 +342,14 @@ fn install_settings_callbacks(
     restart_requested: Rc<Cell<bool>>,
 ) {
     let initial_theme = Rc::new(Cell::new(Theme::Dark));
+    let config_loaded = Rc::new(Cell::new(false));
 
     let window_weak = window.as_weak();
     let settings_weak = settings_window.as_weak();
     let store_for_open = store.clone();
     let config_path_for_open = config_path.clone();
     let initial_theme_for_open = initial_theme.clone();
+    let config_loaded_for_open = config_loaded.clone();
 
     let open_settings = Rc::new(move || {
         let (Some(w), Some(s)) = (window_weak.upgrade(), settings_weak.upgrade()) else {
@@ -371,12 +374,26 @@ fn install_settings_callbacks(
             };
         initial_theme_for_open.set(current_theme);
 
-        let config_text = std::fs::read_to_string(&config_path_for_open).unwrap_or_else(|_| {
-            String::from_utf8_lossy(include_bytes!("../assets/setup/salmon-watch.yml")).into_owned()
-        });
-        let configured_connection_error_delay_secs = serde_yaml::from_str::<Config>(&config_text)
-            .ok()
-            .and_then(|config| config.ws_client.connection_error_delay_secs);
+        let (config_text, config_read_error) = match read_settings_config(&config_path_for_open) {
+            Ok(config_text) => {
+                config_loaded_for_open.set(true);
+                (config_text, None)
+            }
+            Err(error) => {
+                config_loaded_for_open.set(false);
+                (
+                    String::new(),
+                    Some(format!("Failed to read config: {error:#}")),
+                )
+            }
+        };
+        let configured_connection_error_delay_secs = if config_loaded_for_open.get() {
+            serde_yaml::from_str::<Config>(&config_text)
+                .ok()
+                .and_then(|config| config.ws_client.connection_error_delay_secs)
+        } else {
+            None
+        };
         let connection_error_delay_secs =
             configured_connection_error_delay_secs.unwrap_or(persisted_connection_error_delay_secs);
 
@@ -391,8 +408,8 @@ fn install_settings_callbacks(
         s.set_connection_error_delay(connection_error_delay_secs as i32);
         s.set_connection_error_delay_overridden(configured_connection_error_delay_secs.is_some());
         s.set_config_text(config_text.into());
-        s.set_status_message("".into());
-        s.set_status_is_error(false);
+        s.set_status_message(config_read_error.unwrap_or_default().into());
+        s.set_status_is_error(!config_loaded_for_open.get());
 
         center_window(s.window(), w.window());
 
@@ -464,11 +481,21 @@ fn install_settings_callbacks(
     let config_path_for_apply = config_path.clone();
     let restart_requested_for_apply = restart_requested.clone();
     let initial_theme_for_apply = initial_theme.clone();
+    let config_loaded_for_apply = config_loaded.clone();
 
     settings_window.on_apply_clicked(move || {
         let (Some(w), Some(s)) = (window_weak.upgrade(), settings_weak.upgrade()) else {
             return;
         };
+
+        if !config_loaded_for_apply.get() {
+            s.set_status_is_error(true);
+            s.set_status_message(
+                "Configuration was not loaded; close Settings and retry before applying changes."
+                    .into(),
+            );
+            return;
+        }
 
         let theme_idx = s.get_theme_index();
         let new_theme = if theme_idx == 0 {
@@ -502,10 +529,7 @@ fn install_settings_callbacks(
             .is_some();
 
         // Save configuration file
-        if let Some(parent) = config_path_for_apply.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(err) = std::fs::write(&config_path_for_apply, config_str.as_bytes()) {
+        if let Err(err) = save_config_atomically(&config_path_for_apply, config_str.as_bytes()) {
             s.set_status_is_error(true);
             s.set_status_message(format!("Failed to save config: {err:#}").into());
             return;
@@ -543,6 +567,53 @@ fn install_settings_callbacks(
         }
         let _ = slint::quit_event_loop();
     });
+}
+
+fn read_settings_config(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path)
+        .with_context(|| format!("read configuration at {}", path.display()))
+}
+
+/// Replaces the configuration only after a complete, durable temporary write.
+/// Existing permissions are preserved and symlink targets are updated without
+/// replacing the symlink itself.
+fn save_config_atomically(path: &Path, contents: &[u8]) -> Result<()> {
+    let destination = match std::fs::canonicalize(path) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::path::absolute(path).context("resolve configuration path")?
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("resolve configuration at {}", path.display()));
+        }
+    };
+    let parent = destination
+        .parent()
+        .context("configuration path has no parent directory")?;
+    std::fs::create_dir_all(parent).context("create configuration directory")?;
+
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(parent).context("create temporary configuration file")?;
+    if let Ok(metadata) = std::fs::metadata(&destination) {
+        temporary
+            .as_file()
+            .set_permissions(metadata.permissions())
+            .context("preserve configuration permissions")?;
+    }
+    temporary
+        .write_all(contents)
+        .context("write temporary configuration file")?;
+    temporary
+        .as_file()
+        .sync_all()
+        .context("sync temporary configuration file")?;
+    temporary
+        .persist(&destination)
+        .map_err(|error| error.error)
+        .with_context(|| format!("replace configuration at {}", destination.display()))?;
+
+    Ok(())
 }
 
 /// Centers the settings window on the monitor containing the main window, or the primary monitor.
@@ -847,6 +918,47 @@ mod tests {
     use crate::window_geometry::WindowGeometryManager;
     use slint::ComponentHandle;
     use std::sync::Mutex;
+
+    #[test]
+    fn settings_config_read_errors_do_not_substitute_a_template() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing.yml");
+
+        assert!(super::read_settings_config(&missing).is_err());
+    }
+
+    #[test]
+    fn settings_config_save_replaces_the_complete_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("salmon-watch.yml");
+        std::fs::write(&path, "old config").unwrap();
+
+        super::save_config_atomically(&path, b"new config\n").unwrap();
+
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "new config\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_config_save_preserves_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target.yml");
+        let link = directory.path().join("salmon-watch.yml");
+        std::fs::write(&target, "old config").unwrap();
+        symlink(&target, &link).unwrap();
+
+        super::save_config_atomically(&link, b"new config\n").unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "new config\n");
+    }
 
     #[derive(Default)]
     struct RecordingNotificationSink {

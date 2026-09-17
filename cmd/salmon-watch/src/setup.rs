@@ -227,7 +227,11 @@ fn validate_executable_path(executable: &Path, temporary_directory: &Path) -> Re
 }
 
 /// Builds one desktop entry using freedesktop `Exec` escaping, not shell quoting.
-pub(crate) fn desktop_entry(executable: &Path, config_filename: &Path, start_hidden: bool) -> Result<String> {
+pub(crate) fn desktop_entry(
+    executable: &Path,
+    config_filename: &Path,
+    start_hidden: bool,
+) -> Result<String> {
     let executable = executable
         .to_str()
         .context("executable path must be valid UTF-8 for a desktop entry")?;
@@ -409,7 +413,8 @@ fn set_public_file_permissions(_file: &fs::File) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        _file.set_permissions(fs::Permissions::from_mode(0o644))
+        _file
+            .set_permissions(fs::Permissions::from_mode(0o644))
             .context("set file permissions")?;
     }
     Ok(())

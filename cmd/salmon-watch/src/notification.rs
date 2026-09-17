@@ -410,6 +410,13 @@ impl ConnectionNotificationFilter {
             .min()
     }
 
+    /// Clears notification-only state after the corresponding domain incident
+    /// recovers without producing an `OK` notification (for example, while it
+    /// is snoozed).
+    pub fn reset_server(&mut self, server_id: &str) {
+        self.servers.remove(server_id);
+    }
+
     /// Drains and transitions all notifications whose delay deadline has passed.
     pub fn drain_due(&mut self, now: Instant) -> Vec<(String, String)> {
         let mut due = Vec::new();
@@ -819,5 +826,38 @@ mod tests {
             due,
             vec![("error: internal.tunnel.srvB".into(), "down B".into())]
         );
+    }
+
+    #[test]
+    fn filter_accepts_a_new_error_after_a_silent_recovery() {
+        let mut filter = ConnectionNotificationFilter::new(Duration::from_secs(10));
+        let t0 = Instant::now();
+
+        filter.handle_notification(
+            "error: internal.connection.srv1".into(),
+            "first outage".into(),
+            t0,
+        );
+        assert_eq!(
+            filter.drain_due(t0 + Duration::from_secs(10)),
+            vec![(
+                "error: internal.connection.srv1".into(),
+                "first outage".into()
+            )]
+        );
+
+        // A snoozed recovery does not produce an OK notification, so runtime
+        // must reset the filter explicitly from the domain transition.
+        filter.reset_server("srv1");
+
+        assert_eq!(
+            filter.handle_notification(
+                "error: internal.connection.srv1".into(),
+                "second outage".into(),
+                t0 + Duration::from_secs(20),
+            ),
+            FilterAction::Suppress
+        );
+        assert_eq!(filter.next_deadline(), Some(t0 + Duration::from_secs(30)));
     }
 }

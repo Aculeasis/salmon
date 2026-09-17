@@ -1,5 +1,5 @@
-use std::path::Path;
 use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 
 pub const APP_NAME: &str = "Salmon Watch";
 
@@ -7,8 +7,8 @@ pub const APP_NAME: &str = "Salmon Watch";
 pub fn is_autostart_enabled(_config_path: &Path) -> Result<bool> {
     #[cfg(windows)]
     {
-        use winreg::enums::*;
         use winreg::RegKey;
+        use winreg::enums::*;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let run = hkcu.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -43,8 +43,8 @@ pub fn is_autostart_enabled(_config_path: &Path) -> Result<bool> {
 pub fn set_autostart(enabled: bool, config_path: &Path) -> Result<()> {
     #[cfg(windows)]
     {
-        use winreg::enums::*;
         use winreg::RegKey;
+        use winreg::enums::*;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let (key, _) = hkcu
@@ -53,14 +53,17 @@ pub fn set_autostart(enabled: bool, config_path: &Path) -> Result<()> {
 
         if enabled {
             let exe = std::env::current_exe().context("locate current executable")?;
-            let is_default_config = crate::config::default_path()
-                .ok()
-                .as_deref() == Some(config_path);
+            let config_path = absolute_config_path(config_path)?;
+            let is_default_config = is_default_config(&config_path);
 
             let value = if is_default_config {
                 format!("\"{}\"", exe.display())
             } else {
-                format!("\"{}\" --config \"{}\"", exe.display(), config_path.display())
+                format!(
+                    "\"{}\" --config \"{}\"",
+                    exe.display(),
+                    config_path.display()
+                )
             };
             key.set_value(APP_NAME, &value)
                 .context("write Windows Run registry value")?;
@@ -83,7 +86,8 @@ pub fn set_autostart(enabled: bool, config_path: &Path) -> Result<()> {
                 std::fs::create_dir_all(parent).context("create autostart directory")?;
             }
             let exe = std::env::current_exe().context("locate current executable")?;
-            let content = crate::setup::desktop_entry(&exe, config_path, false)
+            let config_path = absolute_config_path(config_path)?;
+            let content = crate::setup::desktop_entry(&exe, &config_path, false)
                 .context("generate desktop entry")?;
             std::fs::write(&path, content.as_bytes()).context("write autostart desktop entry")?;
             log::info!("enabled Linux autostart at {}", path.display());
@@ -104,20 +108,17 @@ pub fn set_autostart(enabled: bool, config_path: &Path) -> Result<()> {
                 std::fs::create_dir_all(parent).context("create LaunchAgents directory")?;
             }
             let exe = std::env::current_exe().context("locate current executable")?;
-            let is_default_config = crate::config::default_path()
-                .ok()
-                .as_deref() == Some(config_path);
+            let config_path = absolute_config_path(config_path)?;
+            let is_default_config = is_default_config(&config_path);
+            let executable = plist_xml_text(&exe.to_string_lossy());
+            let config = plist_xml_text(&config_path.to_string_lossy());
 
             let args_xml = if is_default_config {
-                format!(
-                    "        <string>{}</string>",
-                    exe.display()
-                )
+                format!("        <string>{executable}</string>")
             } else {
                 format!(
                     "        <string>{}</string>\n        <string>--config</string>\n        <string>{}</string>",
-                    exe.display(),
-                    config_path.display()
+                    executable, config
                 )
             };
 
@@ -157,6 +158,27 @@ pub fn set_autostart(enabled: bool, config_path: &Path) -> Result<()> {
     }
 }
 
+fn absolute_config_path(config_path: &Path) -> Result<PathBuf> {
+    std::path::absolute(config_path).context("resolve autostart config path")
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn is_default_config(config_path: &Path) -> bool {
+    crate::config::default_path()
+        .and_then(|path| absolute_config_path(&path))
+        .is_ok_and(|path| path == config_path)
+}
+
+#[cfg(target_os = "macos")]
+fn plist_xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 #[cfg(target_os = "linux")]
 fn linux_autostart_path() -> Result<std::path::PathBuf> {
     let config_dir = dirs::config_dir().context("determine user configuration directory")?;
@@ -174,29 +196,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_autostart_toggle() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config_path = temp_dir.path().join("salmon-watch.yml");
-        std::fs::write(
-            &config_path,
-            b"wsClient:\n  servers:\n    - id: test\n      addr: 127.0.0.1:41990\n",
-        )
-        .unwrap();
-
-        let initial = is_autostart_enabled(&config_path).unwrap();
-
-        // Enable autostart
-        set_autostart(true, &config_path).unwrap();
-        assert!(is_autostart_enabled(&config_path).unwrap());
-
-        // Disable autostart
-        set_autostart(false, &config_path).unwrap();
-        assert!(!is_autostart_enabled(&config_path).unwrap());
-
-        // Restore initial state
-        if initial {
-            let _ = set_autostart(true, &config_path);
-        }
+    fn relative_config_paths_are_resolved_without_touching_real_autostart() {
+        let resolved = absolute_config_path(Path::new("config/salmon-watch.yml")).unwrap();
+        assert!(resolved.is_absolute());
+        assert!(resolved.ends_with("config/salmon-watch.yml"));
     }
 }
-
