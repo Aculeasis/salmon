@@ -1,4 +1,4 @@
-import { CheckBox, ComboBox, HorizontalBox, Palette, ScrollView, TextEdit, VerticalBox } from "std-widgets.slint";
+import { CheckBox, ComboBox, HorizontalBox, Palette, ScrollView, SpinBox, TextEdit, VerticalBox } from "std-widgets.slint";
 import "DepartureMono-Regular.otf";
 
 export struct ServerView {
@@ -550,7 +550,7 @@ export component SettingsWindow inherits Window {
     default-font-family: "Departure Mono";
     default-font-size: 13px;
     preferred-width: 600px;
-    preferred-height: 520px;
+    preferred-height: 550px;
     min-width: 380px;
     min-height: 320px;
     background: dark-theme ? #171717 : #ffffff;
@@ -559,6 +559,8 @@ export component SettingsWindow inherits Window {
     in-out property <int> theme-index: 0;
     in-out property <bool> autostart-enabled: false;
     in-out property <bool> launch-minimized: false;
+    in-out property <int> connection-error-delay: 10;
+    in-out property <bool> connection-error-delay-overridden: false;
     in-out property <string> config-text: "";
     in-out property <string> status-message: "";
     in-out property <bool> status-is-error: false;
@@ -638,6 +640,30 @@ export component SettingsWindow inherits Window {
             CheckBox {
                 text: "Launch minimized";
                 checked <=> root.launch-minimized;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            Text {
+                text: "Connection error delay:";
+                color: root.foreground-color;
+                vertical-alignment: center;
+            }
+            SpinBox {
+                minimum: 0;
+                maximum: 3600;
+                value <=> root.connection-error-delay;
+                enabled: !root.connection-error-delay-overridden;
+                width: 100px;
+            }
+            Text {
+                text: root.connection-error-delay-overridden
+                    ? "sec (set in YAML)"
+                    : "sec (0 to notify immediately)";
+                color: root.border-color-value;
+                vertical-alignment: center;
             }
         }
 

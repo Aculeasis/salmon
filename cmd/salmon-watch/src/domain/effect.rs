@@ -25,6 +25,8 @@ pub enum Effect {
         title: String,
         /// Optional incident details; empty for resolution notifications.
         body: String,
+        /// Time when the triggering event occurred, before runtime queueing.
+        at: OffsetDateTime,
     },
     /// Writes a proposed complete map before committing it to live state.
     PersistSnoozes {

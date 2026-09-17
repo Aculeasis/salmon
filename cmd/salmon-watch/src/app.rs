@@ -94,7 +94,11 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
         "starting with config {} ({} servers, window {})",
         config_path.display(),
         config.ws_client.servers.len(),
-        if should_start_hidden { "hidden" } else { "visible" }
+        if should_start_hidden {
+            "hidden"
+        } else {
+            "visible"
+        }
     );
     let window = MainWindow::new().context("failed to create native window")?;
     install_scale_logging(&window, automatic_scale);
@@ -149,7 +153,12 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
             persist_store.update(|state| state.replace_snoozes(snoozes))
         },
     );
-    let runtime = RuntimeHandle::start(config, snoozes, publish, persist)?;
+    let connection_error_delay_secs = config
+        .ws_client
+        .connection_error_delay_secs
+        .unwrap_or(persisted.preferences.connection_error_delay_secs);
+    let connection_error_delay = std::time::Duration::from_secs(connection_error_delay_secs as u64);
+    let runtime = RuntimeHandle::start(config, snoozes, connection_error_delay, publish, persist)?;
     log::debug!("application runtime started");
     install_incident_actions(&window, runtime.commands());
 
@@ -343,22 +352,33 @@ fn install_settings_callbacks(
         let (Some(w), Some(s)) = (window_weak.upgrade(), settings_weak.upgrade()) else {
             return;
         };
-        let (current_theme, launch_minimized) = match store_for_open.load() {
-            Ok(state) => (state.preferences.theme, state.preferences.launch_minimized),
-            Err(_) => (
-                if w.get_dark_theme() {
-                    Theme::Dark
-                } else {
-                    Theme::Light
-                },
-                false,
-            ),
-        };
+        let (current_theme, launch_minimized, persisted_connection_error_delay_secs) =
+            match store_for_open.load() {
+                Ok(state) => (
+                    state.preferences.theme,
+                    state.preferences.launch_minimized,
+                    state.preferences.connection_error_delay_secs,
+                ),
+                Err(_) => (
+                    if w.get_dark_theme() {
+                        Theme::Dark
+                    } else {
+                        Theme::Light
+                    },
+                    false,
+                    crate::persistence::DEFAULT_CONNECTION_ERROR_DELAY_SECS,
+                ),
+            };
         initial_theme_for_open.set(current_theme);
 
         let config_text = std::fs::read_to_string(&config_path_for_open).unwrap_or_else(|_| {
             String::from_utf8_lossy(include_bytes!("../assets/setup/salmon-watch.yml")).into_owned()
         });
+        let configured_connection_error_delay_secs = serde_yaml::from_str::<Config>(&config_text)
+            .ok()
+            .and_then(|config| config.ws_client.connection_error_delay_secs);
+        let connection_error_delay_secs =
+            configured_connection_error_delay_secs.unwrap_or(persisted_connection_error_delay_secs);
 
         let autostart_enabled =
             crate::autostart::is_autostart_enabled(&config_path_for_open).unwrap_or(false);
@@ -368,6 +388,8 @@ fn install_settings_callbacks(
         s.set_dark_theme(is_dark);
         s.set_autostart_enabled(autostart_enabled);
         s.set_launch_minimized(launch_minimized);
+        s.set_connection_error_delay(connection_error_delay_secs as i32);
+        s.set_connection_error_delay_overridden(configured_connection_error_delay_secs.is_some());
         s.set_config_text(config_text.into());
         s.set_status_message("".into());
         s.set_status_is_error(false);
@@ -456,6 +478,7 @@ fn install_settings_callbacks(
         };
         let autostart_enabled = s.get_autostart_enabled();
         let launch_minimized = s.get_launch_minimized();
+        let connection_error_delay = s.get_connection_error_delay().max(0) as u32;
         let config_str = s.get_config_text().to_string();
 
         // Validate YAML syntax and configuration invariants
@@ -473,6 +496,10 @@ fn install_settings_callbacks(
             s.set_status_message(format!("Configuration error: {err}").into());
             return;
         }
+        let connection_error_delay_is_overridden = parsed_config
+            .ws_client
+            .connection_error_delay_secs
+            .is_some();
 
         // Save configuration file
         if let Some(parent) = config_path_for_apply.parent() {
@@ -485,16 +512,18 @@ fn install_settings_callbacks(
         }
 
         // Update autostart
-        if let Err(err) =
-            crate::autostart::set_autostart(autostart_enabled, &config_path_for_apply)
+        if let Err(err) = crate::autostart::set_autostart(autostart_enabled, &config_path_for_apply)
         {
             log::error!("failed to update autostart: {err:#}");
         }
 
-        // Save theme and launch_minimized to preferences
+        // Save theme, launch_minimized, and connection_error_delay_secs to preferences
         if let Err(err) = store_for_apply.update(|state| {
             state.preferences.theme = new_theme;
             state.preferences.launch_minimized = launch_minimized;
+            if !connection_error_delay_is_overridden {
+                state.preferences.connection_error_delay_secs = connection_error_delay;
+            }
             Ok(())
         }) {
             log::error!("failed to save preferences: {err:#}");
@@ -507,10 +536,10 @@ fn install_settings_callbacks(
 
         // Reload configuration by restarting the watcher
         restart_requested_for_apply.set(true);
-        if w.window().is_visible() {
-            if let Err(err) = geometry_for_apply.save(w.window()) {
-                log::error!("failed to save window geometry: {err:#}");
-            }
+        if w.window().is_visible()
+            && let Err(err) = geometry_for_apply.save(w.window())
+        {
+            log::error!("failed to save window geometry: {err:#}");
         }
         let _ = slint::quit_event_loop();
     });
@@ -520,7 +549,7 @@ fn install_settings_callbacks(
 fn center_window(target: &slint::Window, parent: &slint::Window) {
     let scale = target.scale_factor();
     let width = (600.0 * scale).round() as i32;
-    let height = (520.0 * scale).round() as i32;
+    let height = (550.0 * scale).round() as i32;
 
     let monitor = parent
         .with_winit_window(|w| w.current_monitor().or_else(|| w.primary_monitor()))

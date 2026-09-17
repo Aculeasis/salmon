@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
 use notify_rust::Notification;
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use time::OffsetDateTime;
+use tokio::time::Instant;
 
 /// Maximum number of notifications waiting behind the one currently being shown.
 const NOTIFICATION_QUEUE_CAPACITY: usize = 32;
@@ -185,8 +188,8 @@ fn desktop_notification(title: &str, body: &str) -> Notification {
 /// Ensures the Windows AppUserModelID is registered for desktop toast notifications.
 #[cfg(windows)]
 pub fn register_app_id() {
-    use winreg::enums::*;
     use winreg::RegKey;
+    use winreg::enums::*;
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     if let Ok((key, _)) = hkcu.create_subkey(r"Software\Classes\AppUserModelId\Salmon Watch") {
@@ -204,12 +207,231 @@ pub fn register_app_id() {
     }
 }
 
+/// Action to take for a processed notification.
+#[derive(Debug, Eq, PartialEq)]
+pub enum FilterAction {
+    /// Deliver this notification immediately.
+    Send { title: String, body: String },
+    /// Deliver multiple notifications in order.
+    SendBatch {
+        notifications: Vec<(String, String)>,
+    },
+    /// Suppress / delay this notification.
+    Suppress,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ServerConnectionState {
+    /// No ongoing connection error for this server.
+    Idle,
+    /// A connection error occurred and is being delayed until `deadline`.
+    Delaying {
+        deadline: Instant,
+        deadline_at: OffsetDateTime,
+        title: String,
+        body: String,
+    },
+    /// The delay expired, the connection had not recovered, and the error was notified.
+    Notified,
+}
+
+enum ConnectionEvent<'a> {
+    Error { server_id: &'a str },
+    Ok { server_id: &'a str },
+}
+
+fn parse_connection_event(title: &str) -> Option<ConnectionEvent<'_>> {
+    if let Some(id) = title.strip_prefix("error: internal.connection.") {
+        Some(ConnectionEvent::Error { server_id: id })
+    } else if let Some(id) = title.strip_prefix("error: internal.tunnel.") {
+        Some(ConnectionEvent::Error { server_id: id })
+    } else if let Some(id) = title.strip_prefix("OK: internal.connection.") {
+        Some(ConnectionEvent::Ok { server_id: id })
+    } else {
+        title
+            .strip_prefix("OK: internal.tunnel.")
+            .map(|id| ConnectionEvent::Ok { server_id: id })
+    }
+}
+
+/// Filters and debounces connection error notifications.
+///
+/// Transient drops (such as SSH tunnel reconnects) that recover within `delay`
+/// are completely suppressed to avoid noisy, useless desktop toasts.
+/// Non-connection notifications (e.g. server incident alerts) always pass through immediately.
+#[derive(Debug)]
+pub struct ConnectionNotificationFilter {
+    delay: Duration,
+    servers: HashMap<String, ServerConnectionState>,
+}
+
+impl ConnectionNotificationFilter {
+    pub fn new(delay: Duration) -> Self {
+        Self {
+            delay,
+            servers: HashMap::new(),
+        }
+    }
+
+    /// Evaluates an incoming notification effect against the delay and server state.
+    pub fn handle_notification_at(
+        &mut self,
+        title: String,
+        body: String,
+        occurred_at: OffsetDateTime,
+        now: Instant,
+        wall_now: OffsetDateTime,
+    ) -> FilterAction {
+        let event = match parse_connection_event(&title) {
+            Some(event) => event,
+            None => return FilterAction::Send { title, body },
+        };
+
+        if self.delay.is_zero() {
+            match event {
+                ConnectionEvent::Error { server_id } => {
+                    self.servers
+                        .insert(server_id.to_string(), ServerConnectionState::Notified);
+                }
+                ConnectionEvent::Ok { server_id } => {
+                    self.servers
+                        .insert(server_id.to_string(), ServerConnectionState::Idle);
+                }
+            }
+            return FilterAction::Send { title, body };
+        }
+
+        match event {
+            ConnectionEvent::Error { server_id } => {
+                let state = self
+                    .servers
+                    .entry(server_id.to_string())
+                    .or_insert(ServerConnectionState::Idle);
+                match state {
+                    ServerConnectionState::Idle => {
+                        let deadline_at = occurred_at
+                            + time::Duration::try_from(self.delay)
+                                .expect("notification delay fits time::Duration");
+                        let remaining = std::time::Duration::try_from(deadline_at - wall_now)
+                            .unwrap_or(Duration::ZERO);
+                        *state = ServerConnectionState::Delaying {
+                            deadline: now + remaining,
+                            deadline_at,
+                            title,
+                            body,
+                        };
+                        FilterAction::Suppress
+                    }
+                    ServerConnectionState::Delaying {
+                        title: existing_title,
+                        body: existing_body,
+                        deadline_at,
+                        ..
+                    } => {
+                        if occurred_at >= *deadline_at {
+                            *state = ServerConnectionState::Notified;
+                            return FilterAction::Send { title, body };
+                        }
+                        // While the timer is ticking, suppress subsequent errors and retain
+                        // the most recent error details while preserving the original deadline.
+                        *existing_title = title;
+                        *existing_body = body;
+                        FilterAction::Suppress
+                    }
+                    ServerConnectionState::Notified => {
+                        // Error was already notified to desktop; do not re-emit duplicate toasts
+                        // on retry failures before recovery.
+                        FilterAction::Suppress
+                    }
+                }
+            }
+            ConnectionEvent::Ok { server_id } => {
+                let state = self
+                    .servers
+                    .entry(server_id.to_string())
+                    .or_insert(ServerConnectionState::Idle);
+                match state {
+                    ServerConnectionState::Idle => {
+                        // Spurious or untracked OK; suppress.
+                        FilterAction::Suppress
+                    }
+                    ServerConnectionState::Delaying { deadline_at, .. }
+                        if occurred_at < *deadline_at =>
+                    {
+                        // Connection recovered before delay expired; clear the error and suppress OK.
+                        *state = ServerConnectionState::Idle;
+                        FilterAction::Suppress
+                    }
+                    ServerConnectionState::Delaying { .. } => {
+                        // Runtime may have been busy while both the deadline and recovery passed.
+                        // Preserve ordering by delivering the delayed error before its recovery.
+                        let old_state = std::mem::replace(state, ServerConnectionState::Idle);
+                        let ServerConnectionState::Delaying {
+                            title: error_title,
+                            body: error_body,
+                            ..
+                        } = old_state
+                        else {
+                            unreachable!("matched delaying state")
+                        };
+                        FilterAction::SendBatch {
+                            notifications: vec![(error_title, error_body), (title, body)],
+                        }
+                    }
+                    ServerConnectionState::Notified => {
+                        // Error was notified previously; notify recovery and reset to Idle.
+                        *state = ServerConnectionState::Idle;
+                        FilterAction::Send { title, body }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn handle_notification(&mut self, title: String, body: String, now: Instant) -> FilterAction {
+        self.handle_notification_at(
+            title,
+            body,
+            OffsetDateTime::UNIX_EPOCH,
+            now,
+            OffsetDateTime::UNIX_EPOCH,
+        )
+    }
+
+    /// Earliest deadline among all currently delaying servers, if any.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.servers
+            .values()
+            .filter_map(|state| match state {
+                ServerConnectionState::Delaying { deadline, .. } => Some(*deadline),
+                _ => None,
+            })
+            .min()
+    }
+
+    /// Drains and transitions all notifications whose delay deadline has passed.
+    pub fn drain_due(&mut self, now: Instant) -> Vec<(String, String)> {
+        let mut due = Vec::new();
+        for state in self.servers.values_mut() {
+            if let ServerConnectionState::Delaying { deadline, .. } = state
+                && now >= *deadline
+            {
+                let old_state = std::mem::replace(state, ServerConnectionState::Notified);
+                if let ServerConnectionState::Delaying { title, body, .. } = old_state {
+                    due.push((title, body));
+                }
+            }
+        }
+        due
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
-    use std::time::Instant;
 
     /// Sink that records every delivered notification.
     struct RecordingSink(Arc<Mutex<Vec<(String, String)>>>);
@@ -251,8 +473,8 @@ mod tests {
     #[cfg(windows)]
     fn register_app_id_creates_registry_entry() {
         register_app_id();
-        use winreg::enums::*;
         use winreg::RegKey;
+        use winreg::enums::*;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let key = hkcu
@@ -350,5 +572,252 @@ mod tests {
 
         // Let the detached test worker finish rather than leaking it into later tests.
         release.send(()).unwrap();
+    }
+
+    #[test]
+    fn filter_sends_immediately_when_delay_is_zero() {
+        let mut filter = ConnectionNotificationFilter::new(Duration::ZERO);
+        let now = Instant::now();
+
+        let action = filter.handle_notification(
+            "error: internal.tunnel.srv1".into(),
+            "ssh error".into(),
+            now,
+        );
+        assert_eq!(
+            action,
+            FilterAction::Send {
+                title: "error: internal.tunnel.srv1".into(),
+                body: "ssh error".into(),
+            }
+        );
+        assert_eq!(filter.next_deadline(), None);
+
+        let action =
+            filter.handle_notification("OK: internal.tunnel.srv1".into(), String::new(), now);
+        assert_eq!(
+            action,
+            FilterAction::Send {
+                title: "OK: internal.tunnel.srv1".into(),
+                body: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn filter_never_delays_service_incidents() {
+        let mut filter = ConnectionNotificationFilter::new(Duration::from_secs(10));
+        let now = Instant::now();
+
+        let action =
+            filter.handle_notification("error: srv1.disk".into(), "disk is full".into(), now);
+        assert_eq!(
+            action,
+            FilterAction::Send {
+                title: "error: srv1.disk".into(),
+                body: "disk is full".into(),
+            }
+        );
+        assert_eq!(filter.next_deadline(), None);
+
+        let action = filter.handle_notification("OK: srv1.disk".into(), String::new(), now);
+        assert_eq!(
+            action,
+            FilterAction::Send {
+                title: "OK: srv1.disk".into(),
+                body: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn filter_suppresses_transient_connection_error_and_recovery() {
+        let mut filter = ConnectionNotificationFilter::new(Duration::from_secs(10));
+        let t0 = Instant::now();
+
+        // 1. Error arrives -> suppressed, deadline set to t0 + 10s
+        let action =
+            filter.handle_notification("error: internal.tunnel.srv1".into(), "ssh down".into(), t0);
+        assert_eq!(action, FilterAction::Suppress);
+        assert_eq!(filter.next_deadline(), Some(t0 + Duration::from_secs(10)));
+
+        // 2. Recovery arrives at t0 + 2s -> suppressed, error cancelled
+        let action = filter.handle_notification(
+            "OK: internal.tunnel.srv1".into(),
+            String::new(),
+            t0 + Duration::from_secs(2),
+        );
+        assert_eq!(action, FilterAction::Suppress);
+        assert_eq!(filter.next_deadline(), None);
+
+        // 3. At t0 + 10s, nothing is due
+        assert!(filter.drain_due(t0 + Duration::from_secs(10)).is_empty());
+    }
+
+    #[test]
+    fn filter_uses_event_time_when_recovery_waited_in_runtime_queue() {
+        let mut filter = ConnectionNotificationFilter::new(Duration::from_secs(10));
+        let t0 = Instant::now();
+        let wall_t0 = OffsetDateTime::UNIX_EPOCH;
+
+        assert_eq!(
+            filter.handle_notification_at(
+                "error: internal.connection.srv1".into(),
+                "socket closed".into(),
+                wall_t0,
+                t0 + Duration::from_secs(15),
+                wall_t0 + time::Duration::seconds(15),
+            ),
+            FilterAction::Suppress
+        );
+
+        // The recovery occurred after five seconds, but runtime did not process it
+        // until fifteen seconds after the error.
+        assert_eq!(
+            filter.handle_notification_at(
+                "OK: internal.connection.srv1".into(),
+                String::new(),
+                wall_t0 + time::Duration::seconds(5),
+                t0 + Duration::from_secs(15),
+                wall_t0 + time::Duration::seconds(15),
+            ),
+            FilterAction::Suppress
+        );
+        assert_eq!(filter.next_deadline(), None);
+    }
+
+    #[test]
+    fn filter_preserves_error_then_ok_order_when_late_recovery_waited_in_queue() {
+        let mut filter = ConnectionNotificationFilter::new(Duration::from_secs(10));
+        let t0 = Instant::now();
+        let wall_t0 = OffsetDateTime::UNIX_EPOCH;
+
+        filter.handle_notification_at(
+            "error: internal.connection.srv1".into(),
+            "socket closed".into(),
+            wall_t0,
+            t0 + Duration::from_secs(15),
+            wall_t0 + time::Duration::seconds(15),
+        );
+
+        assert_eq!(
+            filter.handle_notification_at(
+                "OK: internal.connection.srv1".into(),
+                String::new(),
+                wall_t0 + time::Duration::seconds(12),
+                t0 + Duration::from_secs(15),
+                wall_t0 + time::Duration::seconds(15),
+            ),
+            FilterAction::SendBatch {
+                notifications: vec![
+                    (
+                        "error: internal.connection.srv1".into(),
+                        "socket closed".into(),
+                    ),
+                    ("OK: internal.connection.srv1".into(), String::new()),
+                ],
+            }
+        );
+        assert_eq!(filter.next_deadline(), None);
+    }
+
+    #[test]
+    fn filter_suppresses_repeated_errors_and_preserves_original_deadline() {
+        let mut filter = ConnectionNotificationFilter::new(Duration::from_secs(10));
+        let t0 = Instant::now();
+
+        filter.handle_notification(
+            "error: internal.tunnel.srv1".into(),
+            "ssh attempt 1".into(),
+            t0,
+        );
+
+        // Subsequent error at t0 + 3s updates body but preserves t0 + 10s deadline
+        let action = filter.handle_notification(
+            "error: internal.connection.srv1".into(),
+            "socket closed".into(),
+            t0 + Duration::from_secs(3),
+        );
+        assert_eq!(action, FilterAction::Suppress);
+        assert_eq!(filter.next_deadline(), Some(t0 + Duration::from_secs(10)));
+
+        // At t0 + 9s, still not due
+        assert!(filter.drain_due(t0 + Duration::from_secs(9)).is_empty());
+
+        // At t0 + 10s, due and delivers latest error
+        let due = filter.drain_due(t0 + Duration::from_secs(10));
+        assert_eq!(
+            due,
+            vec![(
+                "error: internal.connection.srv1".into(),
+                "socket closed".into()
+            )]
+        );
+        assert_eq!(filter.next_deadline(), None);
+    }
+
+    #[test]
+    fn filter_delivers_persistent_error_after_delay_and_notifies_recovery() {
+        let mut filter = ConnectionNotificationFilter::new(Duration::from_secs(10));
+        let t0 = Instant::now();
+
+        filter.handle_notification("error: internal.tunnel.srv1".into(), "ssh down".into(), t0);
+
+        // Delay expires
+        let due = filter.drain_due(t0 + Duration::from_secs(10));
+        assert_eq!(
+            due,
+            vec![("error: internal.tunnel.srv1".into(), "ssh down".into())]
+        );
+
+        // When connection recovers, OK is sent because error was notified
+        let action = filter.handle_notification(
+            "OK: internal.tunnel.srv1".into(),
+            String::new(),
+            t0 + Duration::from_secs(20),
+        );
+        assert_eq!(
+            action,
+            FilterAction::Send {
+                title: "OK: internal.tunnel.srv1".into(),
+                body: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn filter_tracks_multiple_servers_independently() {
+        let mut filter = ConnectionNotificationFilter::new(Duration::from_secs(10));
+        let t0 = Instant::now();
+
+        // Server A fails at t0
+        filter.handle_notification("error: internal.tunnel.srvA".into(), "down A".into(), t0);
+
+        // Server B fails at t0 + 3s
+        filter.handle_notification(
+            "error: internal.tunnel.srvB".into(),
+            "down B".into(),
+            t0 + Duration::from_secs(3),
+        );
+
+        // Server A recovers at t0 + 5s (within delay)
+        filter.handle_notification(
+            "OK: internal.tunnel.srvA".into(),
+            String::new(),
+            t0 + Duration::from_secs(5),
+        );
+
+        // Earliest deadline is now Server B at t0 + 13s
+        assert_eq!(filter.next_deadline(), Some(t0 + Duration::from_secs(13)));
+
+        // At t0 + 10s (when Server A would have expired), nothing is due
+        assert!(filter.drain_due(t0 + Duration::from_secs(10)).is_empty());
+
+        // At t0 + 13s, Server B is due
+        let due = filter.drain_due(t0 + Duration::from_secs(13));
+        assert_eq!(
+            due,
+            vec![("error: internal.tunnel.srvB".into(), "down B".into())]
+        );
     }
 }

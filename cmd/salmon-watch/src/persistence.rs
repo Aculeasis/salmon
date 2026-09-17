@@ -140,8 +140,16 @@ pub struct Preferences {
     pub window_geometry: Option<WindowGeometry>,
     #[serde(default)]
     pub launch_minimized: bool,
+    #[serde(default = "default_connection_error_delay_secs")]
+    pub connection_error_delay_secs: u32,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
+}
+
+pub const DEFAULT_CONNECTION_ERROR_DELAY_SECS: u32 = 10;
+
+fn default_connection_error_delay_secs() -> u32 {
+    DEFAULT_CONNECTION_ERROR_DELAY_SECS
 }
 
 impl Default for Preferences {
@@ -151,6 +159,7 @@ impl Default for Preferences {
             sections: SectionPreferences::default(),
             window_geometry: None,
             launch_minimized: false,
+            connection_error_delay_secs: DEFAULT_CONNECTION_ERROR_DELAY_SECS,
             extra: BTreeMap::new(),
         }
     }
@@ -553,5 +562,15 @@ mod tests {
             fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn preferences_defaults_connection_error_delay_secs_to_ten() {
+        let state: StateFile = serde_json::from_str(r#"{"schema_version": 1}"#).unwrap();
+        assert_eq!(state.preferences.connection_error_delay_secs, 10);
+
+        let roundtrip: StateFile =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert_eq!(roundtrip.preferences.connection_error_delay_secs, 10);
     }
 }

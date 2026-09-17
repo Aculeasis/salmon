@@ -13,7 +13,7 @@ use crate::domain::{
     AppState, Effect, Event, Incident, IncidentState, Reducer, SnoozeAction, UiSnapshot,
 };
 use crate::network;
-use crate::notification::NotificationDispatcher;
+use crate::notification::{ConnectionNotificationFilter, FilterAction, NotificationDispatcher};
 
 /// Thread-safe handoff from the reducer thread to the Slint event loop.
 type Publisher = Arc<dyn Fn(UiSnapshot) + Send + Sync>;
@@ -273,6 +273,7 @@ impl RuntimeHandle {
     pub fn start(
         mut config: Config,
         snoozes: BTreeMap<String, OffsetDateTime>,
+        connection_error_delay: std::time::Duration,
         publish: Publisher,
         persist: SnoozePersister,
     ) -> Result<Self> {
@@ -281,7 +282,17 @@ impl RuntimeHandle {
         let (shutdown, shutdown_rx) = watch::channel(false);
         let thread = thread::Builder::new()
             .name("salmon-watch-runtime".into())
-            .spawn(move || run(config, snoozes, publish, persist, command_rx, shutdown_rx))
+            .spawn(move || {
+                run(
+                    config,
+                    snoozes,
+                    connection_error_delay,
+                    publish,
+                    persist,
+                    command_rx,
+                    shutdown_rx,
+                )
+            })
             .context("failed to start async runtime thread")?;
         Ok(Self {
             commands,
@@ -317,6 +328,7 @@ impl Drop for RuntimeHandle {
 fn run(
     config: Config,
     snoozes: BTreeMap<String, OffsetDateTime>,
+    connection_error_delay: std::time::Duration,
     publish: Publisher,
     persist: SnoozePersister,
     commands: mpsc::Receiver<Command>,
@@ -334,7 +346,13 @@ fn run(
         }
     };
     runtime.block_on(run_async(
-        config, snoozes, publish, persist, commands, shutdown,
+        config,
+        snoozes,
+        connection_error_delay,
+        publish,
+        persist,
+        commands,
+        shutdown,
     ));
     // Network tasks have been joined by run_async. Drop Tokio before reporting
     // the runtime stopped so any remaining auxiliary work is cleaned up too.
@@ -353,6 +371,7 @@ fn run(
 async fn run_async(
     config: Config,
     snoozes: BTreeMap<String, OffsetDateTime>,
+    connection_error_delay: std::time::Duration,
     publish: Publisher,
     persist: SnoozePersister,
     mut commands: mpsc::Receiver<Command>,
@@ -365,6 +384,7 @@ async fn run_async(
             None
         }
     };
+    let mut notification_filter = ConnectionNotificationFilter::new(connection_error_delay);
     let ids = config
         .ws_client
         .servers
@@ -386,14 +406,27 @@ async fn run_async(
     (publish)(reducer.state().snapshot(wall_clock_now()));
     let mut ticks = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
+        let next_delay = notification_filter.next_deadline();
         let event = tokio::select! {
-            Some(event) = events_rx.recv() => event,
-            Some(command) = commands.recv() => command_event(command),
-            _ = ticks.tick() => Event::Tick { at: wall_clock_now() },
+            biased;
             _ = shutdown.changed() => {
                 log::info!("stopping network services");
                 break;
             },
+            Some(event) = events_rx.recv() => event,
+            _ = async {
+                match next_delay {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                for (title, body) in notification_filter.drain_due(Instant::now()) {
+                    enqueue_desktop_notification(&mut notifications, title, body);
+                }
+                continue;
+            }
+            Some(command) = commands.recv() => command_event(command),
+            _ = ticks.tick() => Event::Tick { at: wall_clock_now() },
             else => break,
         };
         let refresh = matches!(event, Event::Tick { .. });
@@ -404,8 +437,26 @@ async fn run_async(
         let mut changed = transition.changed;
         for effect in transition.effects {
             match effect {
-                Effect::Notify { title, body } => {
-                    enqueue_desktop_notification(&mut notifications, title, body);
+                Effect::Notify { title, body, at } => {
+                    match notification_filter.handle_notification_at(
+                        title,
+                        body,
+                        at,
+                        Instant::now(),
+                        wall_clock_now(),
+                    ) {
+                        FilterAction::Send { title, body } => {
+                            enqueue_desktop_notification(&mut notifications, title, body);
+                        }
+                        FilterAction::SendBatch {
+                            notifications: batch,
+                        } => {
+                            for (title, body) in batch {
+                                enqueue_desktop_notification(&mut notifications, title, body);
+                            }
+                        }
+                        FilterAction::Suppress => {}
+                    }
                 }
                 Effect::PersistSnoozes { snoozes, action } => {
                     if !snooze_persistence_is_due(&action, expiry_retry_not_before, Instant::now())

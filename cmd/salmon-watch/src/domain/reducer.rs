@@ -55,6 +55,7 @@ impl Reducer {
                         effects.push(Effect::Notify {
                             title: format!("{}: {}", state_name(item.state), item.key),
                             body: item.details,
+                            at,
                         });
                     }
                 }
@@ -64,6 +65,7 @@ impl Reducer {
                         effects.push(Effect::Notify {
                             title: format!("OK: {}", item.key),
                             body: String::new(),
+                            at,
                         });
                     }
                 }
@@ -181,6 +183,7 @@ impl Reducer {
             .then(|| Effect::Notify {
                 title: format!("OK: {incident_key}"),
                 body: String::new(),
+                at,
             })
             .into_iter()
             .collect();
@@ -232,6 +235,7 @@ impl Reducer {
                         effects.push(Effect::Notify {
                             title: format!("error: {key}"),
                             body: error.clone(),
+                            at,
                         });
                     }
                     self.state.internal_incidents.insert(
@@ -268,6 +272,7 @@ impl Reducer {
                 .then(|| Effect::Notify {
                     title: format!("OK: {key}"),
                     body: String::new(),
+                    at,
                 })
                 .into_iter()
                 .collect(),
@@ -318,6 +323,7 @@ impl Reducer {
                     effects.push(Effect::Notify {
                         title: format!("error: {key}"),
                         body: error.clone(),
+                        at,
                     });
                 }
                 self.state.internal_incidents.insert(

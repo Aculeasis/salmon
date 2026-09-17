@@ -18,6 +18,13 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct WsClientConfig {
     pub servers: Vec<ServerConfig>,
+    /// Optional delay before connection error notifications are shown.
+    #[serde(
+        default,
+        alias = "connection_error_delay_secs",
+        rename = "connectionErrorDelaySecs"
+    )]
+    pub connection_error_delay_secs: Option<u32>,
 }
 
 /// One logical Salmon endpoint and its optional transport layers.
@@ -654,5 +661,16 @@ mod tests {
         ] {
             assert!(parse(yaml).is_err());
         }
+    }
+
+    #[test]
+    fn parses_connection_error_delay_secs() {
+        let yaml = r#"wsClient:
+  connectionErrorDelaySecs: 25
+  servers:
+    - { id: srv, addr: localhost:1 }
+"#;
+        let cfg = parse(yaml).unwrap();
+        assert_eq!(cfg.ws_client.connection_error_delay_secs, Some(25));
     }
 }

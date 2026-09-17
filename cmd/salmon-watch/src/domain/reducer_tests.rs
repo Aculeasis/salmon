@@ -486,7 +486,7 @@ fn tunnel_failure_is_distinct_and_marks_server_data_stale() {
     );
     assert!(matches!(
         &transition.effects[..],
-        [Effect::Notify { title, body }]
+        [Effect::Notify { title, body, .. }]
             if title == "error: internal.tunnel.remote" && body == "ssh exited"
     ));
 }
@@ -506,7 +506,7 @@ fn tunnel_readiness_resolves_only_the_tunnel_incident() {
     assert!(r.state().snapshot(at(2)).active.is_empty());
     assert!(matches!(
         &transition.effects[..],
-        [Effect::Notify { title, body }]
+        [Effect::Notify { title, body, .. }]
             if title == "OK: internal.tunnel.remote" && body.is_empty()
     ));
     assert!(
