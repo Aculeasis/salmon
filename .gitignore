@@ -1,2 +1,3 @@
 bin
+cmd/montray-ui/target
 cmd/salmon-watch/target

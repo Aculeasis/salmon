@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/benbjohnson/clock"
+	"github.com/dimonomid/clock"
 
-	"github.com/dimonomid/salmon"
-	"github.com/dimonomid/salmon/logs"
-	"github.com/dimonomid/salmon/wsclient"
+	"github.com/dimonomid/montray/v2"
+	"github.com/dimonomid/montray/v2/logs"
+	"github.com/dimonomid/montray/v2/wsclient"
 	"github.com/gorilla/websocket"
 )
 
@@ -27,9 +27,9 @@ func TestClientLogsReceivedServerIncidentTotal(t *testing.T) {
 		defer connection.Close()
 		_ = connection.WriteJSON(map[string]interface{}{
 			"event": "OngoingIncidentsSnapshot",
-			"data": salmon.Notification{OngoingIncidents: salmon.OngoingIncidentsWDelta{
-				Total: []*salmon.ItemWContext{{Item: salmon.Item{
-					Key: "disk", State: salmon.ItemStateError, Details: "almost full",
+			"data": montray.Notification{OngoingIncidents: montray.OngoingIncidentsWDelta{
+				Total: []*montray.ItemWContext{{Item: montray.Item{
+					Key: "disk", State: montray.ItemStateError, Details: "almost full",
 				}}},
 			}},
 		})

@@ -3,13 +3,32 @@ package setup
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
+func TestRequirePersistentExecutablePathRejectsOnlyTemporaryTree(t *testing.T) {
+	temporary := t.TempDir()
+	for _, path := range []string{temporary, filepath.Join(temporary, "unpacked", "montray-ui-legacy")} {
+		if _, err := requirePersistentExecutablePath(path, temporary); err == nil || !strings.Contains(err.Error(), "temporary executable") {
+			t.Fatalf("requirePersistentExecutablePath(%q) error = %v, want temporary-path rejection", path, err)
+		}
+	}
+
+	stable := temporary + "-download/montray-server"
+	got, err := requirePersistentExecutablePath(stable, temporary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Clean(stable) {
+		t.Fatalf("requirePersistentExecutablePath() = %q, want %q", got, filepath.Clean(stable))
+	}
+}
+
 func TestInstallExecutablePreservesDestinationByDefault(t *testing.T) {
 	directory := t.TempDir()
-	source := filepath.Join(directory, "download", "salmon")
-	destination := filepath.Join(directory, "usr", "local", "bin", "salmon")
+	source := filepath.Join(directory, "download", "montray")
+	destination := filepath.Join(directory, "usr", "local", "bin", "montray")
 	if err := os.MkdirAll(filepath.Dir(source), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -48,8 +67,8 @@ func TestInstallExecutablePreservesDestinationByDefault(t *testing.T) {
 
 func TestInstallExecutableReplacesDestinationDuringReinstall(t *testing.T) {
 	directory := t.TempDir()
-	source := filepath.Join(directory, "download", "salmon")
-	destination := filepath.Join(directory, "usr", "local", "bin", "salmon")
+	source := filepath.Join(directory, "download", "montray")
+	destination := filepath.Join(directory, "usr", "local", "bin", "montray")
 	if err := os.MkdirAll(filepath.Dir(source), 0755); err != nil {
 		t.Fatal(err)
 	}

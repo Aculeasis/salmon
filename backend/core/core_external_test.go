@@ -6,15 +6,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/benbjohnson/clock"
+	"github.com/dimonomid/clock"
 
-	"github.com/dimonomid/salmon"
-	"github.com/dimonomid/salmon/backend/collectors/exec"
-	"github.com/dimonomid/salmon/backend/collectors/systemd"
-	"github.com/dimonomid/salmon/backend/core"
-	"github.com/dimonomid/salmon/backend/messengers/filelogger"
-	"github.com/dimonomid/salmon/backend/messengers/webserver"
-	"github.com/dimonomid/salmon/logs"
+	"github.com/dimonomid/montray/v2"
+	"github.com/dimonomid/montray/v2/backend/collectors/exec"
+	"github.com/dimonomid/montray/v2/backend/collectors/systemd"
+	"github.com/dimonomid/montray/v2/backend/core"
+	"github.com/dimonomid/montray/v2/backend/messengers/filelogger"
+	"github.com/dimonomid/montray/v2/backend/messengers/webserver"
+	"github.com/dimonomid/montray/v2/logs"
 )
 
 var testLogger = logs.NewLogger(logs.LoggerParams{Clock: clock.New()})
@@ -23,7 +23,7 @@ func TestCorePublishesCommandIncidentLifecycle(t *testing.T) {
 	directory := t.TempDir()
 	probePath := directory + "/probe-state"
 	logPath := directory + "/events.log"
-	applicationLogPath := directory + "/salmon.log"
+	applicationLogPath := directory + "/montray.log"
 	clk := clock.New()
 	applicationLogger := logs.NewLogger(logs.LoggerParams{
 		Clock: clk,
@@ -50,7 +50,7 @@ func TestCorePublishesCommandIncidentLifecycle(t *testing.T) {
 					Command:                   []string{"sh", "-c", "exit 8"},
 					PollInterval:              time.Hour,
 					PollIntervalWhenUnhealthy: time.Hour,
-					Conditions:                []exec.ConfigCondition{{Result: salmon.ItemStateWarning}},
+					Conditions:                []exec.ConfigCondition{{Result: montray.ItemStateWarning}},
 				},
 			},
 		},
@@ -85,7 +85,7 @@ func TestCorePublishesCommandIncidentLifecycle(t *testing.T) {
 }
 
 func TestCoreRejectsAmbiguousComponentConfiguration(t *testing.T) {
-	validExec := &exec.Config{Command: []string{"true"}, Conditions: []exec.ConfigCondition{{Result: salmon.ItemStateOK}}}
+	validExec := &exec.Config{Command: []string{"true"}, Conditions: []exec.ConfigCondition{{Result: montray.ItemStateOK}}}
 	validSystemd := &systemd.Config{}
 	_, err := core.NewCore(core.Config{Collectors: []core.Collector{{
 		ID: "ambiguous", Exec: validExec, Systemd: validSystemd,
@@ -104,7 +104,7 @@ func TestCoreRejectsAmbiguousComponentConfiguration(t *testing.T) {
 
 func TestCoreRejectsDuplicateAndInvalidCollectorConfiguration(t *testing.T) {
 	validExec := func() *exec.Config {
-		return &exec.Config{Command: []string{"true"}, Conditions: []exec.ConfigCondition{{Result: salmon.ItemStateOK}}}
+		return &exec.Config{Command: []string{"true"}, Conditions: []exec.ConfigCondition{{Result: montray.ItemStateOK}}}
 	}
 	tests := []struct {
 		name       string

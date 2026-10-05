@@ -5,13 +5,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dimonomid/salmon"
-	"github.com/dimonomid/salmon/backend/collectors"
-	"github.com/dimonomid/salmon/backend/itemsboard"
-	"github.com/dimonomid/salmon/logs"
-	"github.com/dimonomid/salmon/statestracker"
+	"github.com/dimonomid/montray/v2"
+	"github.com/dimonomid/montray/v2/backend/collectors"
+	"github.com/dimonomid/montray/v2/backend/itemsboard"
+	"github.com/dimonomid/montray/v2/logs"
+	"github.com/dimonomid/montray/v2/statestracker"
 
-	"github.com/benbjohnson/clock"
+	"github.com/dimonomid/clock"
 )
 
 type Core struct {
@@ -178,7 +178,7 @@ func (c *Core) run() {
 // sendMessengerNotifications delivers one notification to all messengers in
 // parallel, then waits for every delivery. This preserves notification order
 // without making a healthy messenger wait behind a slow one.
-func sendMessengerNotifications(messengers []messengerWCtx, notif *salmon.Notification, shutdown <-chan struct{}) {
+func sendMessengerNotifications(messengers []messengerWCtx, notif *montray.Notification, shutdown <-chan struct{}) {
 	var wg sync.WaitGroup
 	for _, mwCtx := range messengers {
 		wg.Add(1)
@@ -190,7 +190,7 @@ func sendMessengerNotifications(messengers []messengerWCtx, notif *salmon.Notifi
 	wg.Wait()
 }
 
-func sendMessengerNotification(mwCtx messengerWCtx, notif *salmon.Notification, shutdown <-chan struct{}) bool {
+func sendMessengerNotification(mwCtx messengerWCtx, notif *montray.Notification, shutdown <-chan struct{}) bool {
 	select {
 	case <-shutdown:
 		return false

@@ -3,9 +3,9 @@ package core
 import (
 	"fmt"
 
-	"github.com/dimonomid/salmon/backend/collectors"
-	"github.com/dimonomid/salmon/backend/collectors/exec"
-	"github.com/dimonomid/salmon/backend/collectors/systemd"
+	"github.com/dimonomid/montray/v2/backend/collectors"
+	"github.com/dimonomid/montray/v2/backend/collectors/exec"
+	"github.com/dimonomid/montray/v2/backend/collectors/systemd"
 )
 
 func createCollector(
