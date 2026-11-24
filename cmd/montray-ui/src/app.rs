@@ -4,20 +4,21 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::cli;
 use crate::cli::Command as CliCommand;
 use crate::config::{self, Config};
+use crate::domain::UiSnapshot;
 use crate::logging;
 use crate::notification::{DesktopNotificationSink, NotificationSink};
 use crate::persistence::{self, StateFile, Store, Theme};
 use crate::runtime::{Command, RuntimeHandle};
 use crate::tray::{FlashCycle, TrayFlashController, TrayIcons};
-use crate::ui::{MainWindow, MontrayTray, SettingsWindow, apply_snapshot};
+use crate::ui::{MainWindow, MontrayTray, SettingsWindow, apply_snapshot, apply_window_snapshot};
 use crate::window_geometry::WindowGeometryManager;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use slint::winit_030::WinitWindowAccessor;
 use slint::{CloseRequestResponse, ComponentHandle, Timer};
 
@@ -118,12 +119,23 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
             "visible"
         }
     );
+    #[cfg(target_os = "windows")]
+    if std::env::var_os("SLINT_BACKEND").is_none() {
+        log::debug!("selecting Slint winit software renderer on Windows");
+        slint::BackendSelector::new()
+            .backend_name("winit".into())
+            .renderer_name("software".into())
+            .select()
+            .context("failed to initialize Windows software renderer")?;
+    }
+
     let window = MainWindow::new().context("failed to create native window")?;
     install_scale_logging(&window, automatic_scale);
     let tray = MontrayTray::new().context("failed to create system tray icon")?;
     let settings_window = SettingsWindow::new().context("failed to create settings window")?;
     log::info!("UI and system tray initialized");
     let geometry = WindowGeometryManager::new(store.clone(), persisted.preferences.window_geometry);
+    let last_snapshot: Arc<Mutex<Option<UiSnapshot>>> = Arc::new(Mutex::new(None));
 
     apply_preferences(&window, &persisted);
     install_window_callbacks(&window, store.clone(), geometry.clone());
@@ -133,6 +145,7 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
         Rc::new(DesktopNotificationSink),
         geometry.clone(),
         config_path.clone(),
+        last_snapshot.clone(),
     );
     install_settings_callbacks(
         &window,
@@ -151,19 +164,27 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
     let tray_weak = tray.as_weak();
     let publish_icons = icons.clone();
     let publish_flash = flash.clone();
-    let publish = Arc::new(move |snapshot| {
-        let tray_weak = tray_weak.clone();
-        let icons = publish_icons.clone();
-        let flash = publish_flash.clone();
-        if let Err(error) = window_weak.upgrade_in_event_loop(move |window| {
-            if let Some(tray) = tray_weak.upgrade()
-                && let Some(cycle) = apply_snapshot(&window, &tray, &icons, &flash, snapshot)
-            {
-                schedule_flash_tick(&window, &tray, icons.transparent_icon(), flash, cycle);
-            }
-        }) {
-            log::error!("failed to publish UI state: {error}");
+    let pending_snapshot: Arc<Mutex<Option<UiSnapshot>>> = Arc::new(Mutex::new(None));
+    let snapshot_scheduled = Arc::new(AtomicBool::new(false));
+    let publish = Arc::new(move |snapshot: UiSnapshot| {
+        {
+            let mut slot = pending_snapshot
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            *slot = Some(snapshot);
         }
+        if snapshot_scheduled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        schedule_snapshot_drain(
+            window_weak.clone(),
+            tray_weak.clone(),
+            publish_icons.clone(),
+            publish_flash.clone(),
+            pending_snapshot.clone(),
+            snapshot_scheduled.clone(),
+            last_snapshot.clone(),
+        );
     });
     let persist_store = store.clone();
     let persist = Arc::new(
@@ -206,6 +227,41 @@ fn run(start_hidden: bool, config_path: PathBuf, automatic_scale: bool) -> Resul
     } else {
         RunOutcome::Exit
     })
+}
+
+/// Drains the latest coalesced snapshot on the Slint event loop thread.
+#[allow(clippy::too_many_arguments)]
+fn schedule_snapshot_drain(
+    window_weak: slint::Weak<MainWindow>,
+    tray_weak: slint::Weak<MontrayTray>,
+    icons: Arc<TrayIcons>,
+    flash: TrayFlashController,
+    pending_snapshot: Arc<Mutex<Option<UiSnapshot>>>,
+    snapshot_scheduled: Arc<AtomicBool>,
+    last_snapshot: Arc<Mutex<Option<UiSnapshot>>>,
+) {
+    let snapshot_scheduled_cb = snapshot_scheduled.clone();
+    if let Err(error) = window_weak.upgrade_in_event_loop(move |window| {
+        snapshot_scheduled_cb.store(false, Ordering::Release);
+        let snapshot = pending_snapshot
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        if let Some(tray) = tray_weak.upgrade()
+            && let Some(cycle) = apply_snapshot(&window, &tray, &icons, &flash, &snapshot)
+        {
+            schedule_flash_tick(&window, &tray, icons.transparent_icon(), flash, cycle);
+        }
+        *last_snapshot
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(snapshot);
+    }) {
+        snapshot_scheduled.store(false, Ordering::Release);
+        log::error!("failed to publish UI state: {error}");
+    }
 }
 
 /// Loads the startup configuration, suggesting complete setup when the default file is absent.
@@ -586,9 +642,30 @@ fn install_settings_callbacks(
     });
 }
 
+const MAX_SETTINGS_CONFIG_BYTES: usize = 256 * 1024;
+
 fn read_settings_config(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path)
-        .with_context(|| format!("read configuration at {}", path.display()))
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("read configuration at {}", path.display()))?;
+    if metadata.len() > MAX_SETTINGS_CONFIG_BYTES as u64 {
+        bail!(
+            "configuration file is too large for the built-in editor ({} bytes, limit {} bytes); edit {} in an external editor",
+            metadata.len(),
+            MAX_SETTINGS_CONFIG_BYTES,
+            path.display()
+        );
+    }
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("read configuration at {}", path.display()))?;
+    if contents.len() > MAX_SETTINGS_CONFIG_BYTES {
+        bail!(
+            "configuration file is too large for the built-in editor ({} bytes, limit {} bytes); edit {} in an external editor",
+            contents.len(),
+            MAX_SETTINGS_CONFIG_BYTES,
+            path.display()
+        );
+    }
+    Ok(contents)
 }
 
 /// Replaces the configuration only after a complete, durable temporary write.
@@ -670,10 +747,12 @@ fn install_tray_callbacks(
     notifications: Rc<dyn NotificationSink>,
     geometry: WindowGeometryManager,
     config_path: PathBuf,
+    last_snapshot: Arc<Mutex<Option<UiSnapshot>>>,
 ) -> Rc<Cell<bool>> {
     let restart_requested = Rc::new(Cell::new(false));
     let window_weak = window.as_weak();
     let geometry_for_toggle = geometry.clone();
+    let last_snapshot_for_toggle = last_snapshot.clone();
     tray.on_toggle_window(move || {
         if let Some(window) = window_weak.upgrade() {
             match tray_toggle_action(
@@ -686,6 +765,13 @@ fn install_tray_callbacks(
                     }
                 }
                 TrayToggleAction::Show => {
+                    if let Some(snapshot) = last_snapshot_for_toggle
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .as_ref()
+                    {
+                        apply_window_snapshot(&window, snapshot);
+                    }
                     if let Err(error) = geometry_for_toggle.show(window.window()) {
                         log::error!("failed to show window: {error:#}");
                         return;
@@ -699,10 +785,18 @@ fn install_tray_callbacks(
 
     let window_weak = window.as_weak();
     let geometry_for_open = geometry.clone();
+    let last_snapshot_for_open = last_snapshot;
     tray.on_open_window(move || {
         let Some(window) = window_weak.upgrade() else {
             return;
         };
+        if let Some(snapshot) = last_snapshot_for_open
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            apply_window_snapshot(&window, snapshot);
+        }
         if let Err(error) = geometry_for_open.show(window.window()) {
             log::error!("failed to show window: {error:#}");
             return;
@@ -942,6 +1036,16 @@ mod tests {
         let missing = directory.path().join("missing.yml");
 
         assert!(super::read_settings_config(&missing).is_err());
+    }
+
+    #[test]
+    fn settings_config_read_rejects_files_exceeding_ui_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let oversized = directory.path().join("oversized.yml");
+        std::fs::write(&oversized, vec![b'a'; super::MAX_SETTINGS_CONFIG_BYTES + 1]).unwrap();
+
+        let error = super::read_settings_config(&oversized).unwrap_err();
+        assert!(error.to_string().contains("too large"), "{error}");
     }
 
     #[test]

@@ -1,12 +1,16 @@
 use std::rc::Rc;
 
 use chrono::{Datelike, Local, NaiveDateTime, TimeZone, Timelike, Utc};
-use slint::{Model, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use time::OffsetDateTime;
 
 use super::{IncidentView, MainWindow, MontrayTray, ServerView};
 use crate::domain::{Incident, IncidentState, OverallState as DomainOverallState, UiSnapshot};
 use crate::tray::{FlashCycle, OverallState, TrayFlashController, TrayIcons, TrayState};
+
+pub const MAX_VISIBLE_SERVERS: usize = 100;
+pub const MAX_VISIBLE_INCIDENTS_PER_SECTION: usize = 50;
+pub const MAX_INCIDENT_FIELD_CHARS: usize = 1_000;
 
 /// Projects one immutable domain snapshot into stable Slint models and tray state.
 ///
@@ -18,65 +22,10 @@ pub fn apply_snapshot(
     tray: &MontrayTray,
     icons: &TrayIcons,
     flash: &TrayFlashController,
-    snapshot: UiSnapshot,
+    snapshot: &UiSnapshot,
 ) -> Option<FlashCycle> {
-    let now_millis = Utc::now().timestamp_millis();
-    let online = snapshot
-        .servers
-        .iter()
-        .filter(|server| server.connected)
-        .count();
-    window.set_server_summary(
-        format!("{online}/{} servers are online", snapshot.servers.len()).into(),
-    );
-    window.set_online_server_count(online as i32);
-    let servers: Vec<_> = snapshot
-        .servers
-        .iter()
-        .map(|server| {
-            let heartbeat_status = heartbeat_status(
-                server.last_heartbeat_at.and_then(offset_datetime_millis),
-                now_millis,
-            );
-            ServerView {
-                id: server.id.clone().into(),
-                connection: if server.connected {
-                    "online"
-                } else if server.initialized {
-                    "offline"
-                } else {
-                    "connecting"
-                }
-                .into(),
-                last_heartbeat: format_domain_timestamp(server.last_heartbeat_at, now_millis)
-                    .into(),
-                connected: server.connected,
-                heartbeat_warning: heartbeat_status == HeartbeatStatus::Warning,
-                heartbeat_overdue: heartbeat_status == HeartbeatStatus::Overdue,
-            }
-        })
-        .collect();
-    let current_servers = window.get_servers();
-    if !update_rows_in_place(&current_servers, &servers, |old, new| old.id == new.id) {
-        window.set_servers(ModelRc::from(Rc::new(VecModel::from(servers))));
-    }
-    let active: Vec<_> = snapshot
-        .active
-        .iter()
-        .map(|incident| incident_view(incident, None, now_millis))
-        .collect();
-    let current_active = window.get_active_incidents();
-    if !update_rows_in_place(&current_active, &active, |old, new| old.key == new.key) {
-        window.set_active_incidents(ModelRc::from(Rc::new(VecModel::from(active))));
-    }
-    let snoozed: Vec<_> = snapshot
-        .snoozed
-        .iter()
-        .map(|item| incident_view(&item.incident, Some(item.until), now_millis))
-        .collect();
-    let current_snoozed = window.get_snoozed_incidents();
-    if !update_rows_in_place(&current_snoozed, &snoozed, |old, new| old.key == new.key) {
-        window.set_snoozed_incidents(ModelRc::from(Rc::new(VecModel::from(snoozed))));
+    if window.window().is_visible() {
+        apply_window_snapshot(window, snapshot);
     }
 
     let tray_state = TrayState {
@@ -98,6 +47,76 @@ pub fn apply_snapshot(
     };
     tray.set_status_title(tray_state.status_title().into());
     flash_cycle
+}
+
+/// Projects snapshot lists and counters into the main window, enforcing UI limits.
+pub fn apply_window_snapshot(window: &MainWindow, snapshot: &UiSnapshot) {
+    let now_millis = Utc::now().timestamp_millis();
+    let online = snapshot
+        .servers
+        .iter()
+        .filter(|server| server.connected)
+        .count();
+    window.set_server_summary(
+        format!("{online}/{} servers are online", snapshot.servers.len()).into(),
+    );
+    window.set_online_server_count(online as i32);
+    window.set_servers_total_count(snapshot.servers.len() as i32);
+    let servers: Vec<_> = snapshot
+        .servers
+        .iter()
+        .take(MAX_VISIBLE_SERVERS)
+        .map(|server| {
+            let heartbeat_status = heartbeat_status(
+                server.last_heartbeat_at.and_then(offset_datetime_millis),
+                now_millis,
+            );
+            ServerView {
+                id: truncate_ui_text(&server.id, MAX_INCIDENT_FIELD_CHARS).into(),
+                connection: if server.connected {
+                    "online"
+                } else if server.initialized {
+                    "offline"
+                } else {
+                    "connecting"
+                }
+                .into(),
+                last_heartbeat: format_domain_timestamp(server.last_heartbeat_at, now_millis)
+                    .into(),
+                connected: server.connected,
+                heartbeat_warning: heartbeat_status == HeartbeatStatus::Warning,
+                heartbeat_overdue: heartbeat_status == HeartbeatStatus::Overdue,
+            }
+        })
+        .collect();
+    let current_servers = window.get_servers();
+    if !update_rows_in_place(&current_servers, &servers, |old, new| old.id == new.id) {
+        window.set_servers(ModelRc::from(Rc::new(VecModel::from(servers))));
+    }
+
+    window.set_active_incidents_total_count(snapshot.active.len() as i32);
+    let active: Vec<_> = snapshot
+        .active
+        .iter()
+        .take(MAX_VISIBLE_INCIDENTS_PER_SECTION)
+        .map(|incident| incident_view(incident, None, now_millis))
+        .collect();
+    let current_active = window.get_active_incidents();
+    if !update_rows_in_place(&current_active, &active, |old, new| old.key == new.key) {
+        window.set_active_incidents(ModelRc::from(Rc::new(VecModel::from(active))));
+    }
+
+    window.set_snoozed_incidents_total_count(snapshot.snoozed.len() as i32);
+    let snoozed: Vec<_> = snapshot
+        .snoozed
+        .iter()
+        .take(MAX_VISIBLE_INCIDENTS_PER_SECTION)
+        .map(|item| incident_view(&item.incident, Some(item.until), now_millis))
+        .collect();
+    let current_snoozed = window.get_snoozed_incidents();
+    if !update_rows_in_place(&current_snoozed, &snoozed, |old, new| old.key == new.key) {
+        window.set_snoozed_incidents(ModelRc::from(Rc::new(VecModel::from(snoozed))));
+    }
 }
 
 /// Updates rows without replacing a model when length and stable identity match.
@@ -154,9 +173,9 @@ fn incident_view(
         ""
     };
     IncidentView {
-        key: incident.key.clone().into(),
+        key: truncate_ui_text(&incident.key, MAX_INCIDENT_FIELD_CHARS).into(),
         state: format!("{state}{suffix}").into(),
-        details: incident.details.clone().into(),
+        details: truncate_ui_text(&incident.details, MAX_INCIDENT_FIELD_CHARS).into(),
         started_at: display_wire_time(&incident.incident_started_at, now_millis).into(),
         snoozed_until: snoozed_until
             .map(|until| format_domain_timestamp(Some(until), now_millis))
@@ -173,6 +192,13 @@ fn incident_view(
         },
         stale: incident.stale,
         snoozed: snoozed_until.is_some(),
+    }
+}
+
+fn truncate_ui_text(value: &str, max_chars: usize) -> String {
+    match value.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => format!("{}… [truncated]", &value[..byte_idx]),
+        None => value.to_owned(),
     }
 }
 
@@ -489,6 +515,13 @@ mod tests {
             1_000_000,
         );
         assert_eq!(ordinary.severity, 3);
+    }
+
+    #[test]
+    fn ui_text_truncation_respects_char_boundaries_and_suffix() {
+        assert_eq!(truncate_ui_text("short", 10), "short");
+        let long = "абвгдеёжзи";
+        assert_eq!(truncate_ui_text(long, 4), "абвг… [truncated]");
     }
 
     struct CountingModel<T> {

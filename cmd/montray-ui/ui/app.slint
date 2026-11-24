@@ -313,11 +313,14 @@ export component MainWindow inherits Window {
     in-out property <bool> active-incidents-expanded: true;
     in-out property <bool> snoozed-incidents-expanded: false;
     in property <[ServerView]> servers;
+    in property <int> servers-total-count;
     in property <string> server-summary;
     in property <int> online-server-count;
     in property <image> current-tray-icon;
     in property <[IncidentView]> active-incidents;
+    in property <int> active-incidents-total-count;
     in property <[IncidentView]> snoozed-incidents;
+    in property <int> snoozed-incidents-total-count;
     callback preferences-changed();
     callback incident-action(string, string, string);
     callback open-settings();
@@ -422,13 +425,18 @@ export component MainWindow inherits Window {
                         wrap: word-wrap;
                     }
                 }
+                if root.servers-total-count > root.servers.length: Text {
+                    text: "Showing first " + root.servers.length + " of " + root.servers-total-count + " servers (UI limit reached).";
+                    color: root.warning-color;
+                    wrap: word-wrap;
+                }
                 Rectangle { height: 1px; background: root.border-color-value; }
             }
 
             SectionHeading {
-                label: root.active-incidents.length == 1 ? "1 incident" : root.active-incidents.length + " incidents";
+                label: root.active-incidents-total-count == 1 ? "1 incident" : root.active-incidents-total-count + " incidents";
                 expanded: root.active-incidents-expanded;
-                label-color: root.active-incidents.length > 0 ? root.disconnected-color : root.connected-color;
+                label-color: root.active-incidents-total-count > 0 ? root.disconnected-color : root.connected-color;
                 toggled => {
                     root.active-incidents-expanded = !root.active-incidents-expanded;
                     root.preferences-changed();
@@ -436,7 +444,7 @@ export component MainWindow inherits Window {
             }
             if root.active-incidents-expanded: VerticalLayout {
                 spacing: 10px;
-                if root.active-incidents.length == 0: Text {
+                if root.active-incidents-total-count == 0: Text {
                     text: "No ongoing incidents.";
                     color: root.foreground-color;
                 }
@@ -453,12 +461,17 @@ export component MainWindow inherits Window {
                     }
                     IncidentSeparator { line-color: root.border-color-value; }
                 }
+                if root.active-incidents-total-count > root.active-incidents.length: Text {
+                    text: "Showing first " + root.active-incidents.length + " of " + root.active-incidents-total-count + " incidents (UI limit reached).";
+                    color: root.warning-color;
+                    wrap: word-wrap;
+                }
             }
 
             SectionHeading {
-                label: root.snoozed-incidents.length == 1 ? "1 snoozed incident" : root.snoozed-incidents.length + " snoozed incidents";
+                label: root.snoozed-incidents-total-count == 1 ? "1 snoozed incident" : root.snoozed-incidents-total-count + " snoozed incidents";
                 expanded: root.snoozed-incidents-expanded;
-                label-color: root.snoozed-incidents.length > 0 ? root.warning-color : root.connected-color;
+                label-color: root.snoozed-incidents-total-count > 0 ? root.warning-color : root.connected-color;
                 toggled => {
                     root.snoozed-incidents-expanded = !root.snoozed-incidents-expanded;
                     root.preferences-changed();
@@ -466,7 +479,7 @@ export component MainWindow inherits Window {
             }
             if root.snoozed-incidents-expanded: VerticalLayout {
                 spacing: 10px;
-                if root.snoozed-incidents.length == 0: Text {
+                if root.snoozed-incidents-total-count == 0: Text {
                     text: "No snoozed incidents.";
                     color: root.foreground-color;
                 }
@@ -494,6 +507,11 @@ export component MainWindow inherits Window {
                         }
                     }
                     IncidentSeparator { line-color: root.border-color-value; }
+                }
+                if root.snoozed-incidents-total-count > root.snoozed-incidents.length: Text {
+                    text: "Showing first " + root.snoozed-incidents.length + " of " + root.snoozed-incidents-total-count + " snoozed incidents (UI limit reached).";
+                    color: root.warning-color;
+                    wrap: word-wrap;
                 }
             }
         }
